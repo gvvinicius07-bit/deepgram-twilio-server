@@ -1,6 +1,3 @@
-// FILENAME: index.js
-// VERSION: Node.js 22 | @deepgram/sdk ^3.3.0 | node-fetch ^2.7.0 | ws ^8.16.0 | express ^4.18.2 | dotenv ^16.4.5
-
 require('dotenv').config();
 const express = require('express');
 const WebSocket = require('ws');
@@ -57,7 +54,7 @@ wss.on('connection', (twilioWs, req) => {
   try {
     const deepgramClient = createClient(DEEPGRAM_API_KEY);
     deepgramLive = deepgramClient.listen.live({
-      model: 'nova-2',
+      model: 'nova-2-general',
       language: 'multi',
       punctuate: true,
       interim_results: true,
