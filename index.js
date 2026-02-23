@@ -1,6 +1,5 @@
 // FILENAME: index.js
-// VERSION: Node.js 22 | @deepgram/sdk latest | node-fetch 2.x | ws 8.x | express 4.x
-// INSTALL: npm install express ws @deepgram/sdk node-fetch dotenv
+// VERSION: Node.js 22 | @deepgram/sdk ^3.3.0 | node-fetch ^2.7.0 | ws ^8.16.0 | express ^4.18.2 | dotenv ^16.4.5
 
 require('dotenv').config();
 const express = require('express');
@@ -38,7 +37,6 @@ app.post('/incoming-call', (req, res) => {
   <Start>
     <Stream url="${wsUrl}" />
   </Start>
-  <Say voice="Polly.Ruth-Neural">Hi! I am Victor's Paint Shop AI assistant, how can I help you today?</Say>
   <Pause length="60"/>
 </Response>`;
 
