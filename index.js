@@ -34,7 +34,7 @@ app.post('/incoming-call', (req, res) => {
   <Start>
     <Stream url="${wsUrl}" />
   </Start>
-  <Pause length="60"/>
+  <Pause length="600"/>
 </Response>`;
 
   res.type('text/xml').send(twiml);
