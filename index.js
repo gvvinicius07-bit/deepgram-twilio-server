@@ -52,6 +52,7 @@ wss.on('connection', (twilioWs, req) => {
   let silenceTimer;
   let callSid;
   let streamSid;
+  let greetingSent = false;
 
   try {
     const deepgramClient = createClient(DEEPGRAM_API_KEY);
@@ -86,7 +87,8 @@ wss.on('connection', (twilioWs, req) => {
       silenceTimer = setTimeout(async () => {
         const fullTranscript = transcript.trim();
         transcript = '';
-        if (!fullTranscript) return;
+
+        if (!fullTranscript || fullTranscript.length < 3) return;
 
         console.log(`Transcript: ${fullTranscript}`);
 
@@ -131,13 +133,36 @@ wss.on('connection', (twilioWs, req) => {
           callSid = data.start.callSid;
           streamSid = data.start.streamSid;
           console.log(`Stream started: ${callSid}`);
+
+          if (!greetingSent) {
+            greetingSent = true;
+            fetch(N8N_WEBHOOK_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({
+                SpeechResult: 'CALL_STARTED',
+                CallSid: callSid,
+                StreamSid: streamSid
+              })
+            }).then(async (res) => {
+              if (res.ok) {
+                const twiml = await res.text();
+                console.log('Greeting sent, updating call');
+                await updateTwilioCall(callSid, twiml);
+              } else {
+                console.error(`Greeting n8n error: ${res.status}`);
+              }
+            }).catch(err => console.error('Error sending CALL_STARTED:', err));
+          }
           break;
+
         case 'media':
           if (deepgramLive.getReadyState() === 1) {
             const audio = Buffer.from(data.media.payload, 'base64');
             deepgramLive.send(audio);
           }
           break;
+
         case 'stop':
           console.log('Stream stopped');
           deepgramLive.finish();
@@ -191,3 +216,10 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+```
+
+**Also do this in n8n:**
+
+AI Agent → Prompt field → change to:
+```
+{{ $json.body?.SpeechResult }}
