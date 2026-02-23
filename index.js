@@ -193,16 +193,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-```
-
----
-
-Also create this `.env.example` file in your repo:
-```
-# FILENAME: .env.example
-DEEPGRAM_API_KEY=your_deepgram_api_key_here
-N8N_WEBHOOK_URL=https://primary-production-34d51.up.railway.app/webhook/incoming-call
-TWILIO_ACCOUNT_SID=your_twilio_account_sid_here
-TWILIO_AUTH_TOKEN=your_twilio_auth_token_here
-SERVER_URL=https://deepgram-twilio-server-production.up.railway.app
-PORT=3000
