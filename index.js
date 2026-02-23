@@ -216,10 +216,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-```
-
-**Also do this in n8n:**
-
-AI Agent → Prompt field → change to:
-```
-{{ $json.body?.SpeechResult }}
