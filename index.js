@@ -95,13 +95,13 @@ function detectLanguageFromText(text) {
   if (/\bmandarin\b|\bchinese\b|\bchines\b/.test(t)) return 'Mandarin';
   if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
 
-  // Portuguese words
-  const ptWords = /\b(oi|ol[aá]|sim|n[aã]o|voc[eê]|quero|queria|pintar|parede|preciso|gostaria|minha|meu|nossa|nosso|posso|falar|ajuda|tinta|obra|obrigado|obrigada|favor|hoje|aqui|isso|esse|este|esta|uma|umas|uns|mas|com|para|ele|ela|seu|sua|nos|mim|ent[aã]o|porque|quando|onde|qual|quanto|falo|fala|gosto|tenho|vou|vai|pode|fazer|seria|brasil|brazil|pin|pint|quer|voc|tud|tudo|tamb[eé]m|tambem|agora|depois|antes|sempre|nunca|muito|pouco|grande|pequeno|novo|velho|bonito|barato|caro|r[aá]pido|devagar|certo|errado|bom|mau|ruim|feliz|triste|casa|quarto|sala|cozinha|banheiro|jardim|rua|cidade|estado|pa[ií]s)\b/;
-  if (ptWords.test(t)) return 'Portuguese';
+  // Portuguese-ONLY words (not in Spanish)
+  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tamb[eé]m|tambem|tudo|muito|ruim|devagar|errado|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|oi)\b/;
+  if (ptOnly.test(t)) return 'Portuguese';
 
-  // Spanish words
-  const esWords = /\b(hola|s[ií]|quiero|quisiera|pintar|pared|necesito|puedo|hablar|ayuda|pintura|gracias|buenos|d[ií]as|favor|hoy|aqu[ií]|eso|este|esta|una|unos|pero|con|para|[eé]l|ella|su|sus|ya|hasta|entonces|porque|cuando|d[oó]nde|cu[aá]l|cuanto|espa[nñ]ol|mexico|colombia|argentina|todo|tambi[eé]n|ahora|despu[eé]s|antes|siempre|nunca|mucho|poco|grande|peque[nñ]o|nuevo|viejo|bonito|barato|caro|r[aá]pido|despacio|correcto|incorrecto|bueno|malo|feliz|triste|casa|cuarto|sala|cocina|ba[nñ]o|jard[ií]n|calle|ciudad|estado|pa[ií]s|quieres|tiene|tengo|voy|voy|puedes|hacer|hecho|ser[ií]a|soy|eres|somos|es|son)\b/;
-  if (esWords.test(t)) return 'Spanish';
+  // Spanish-ONLY words (not in Portuguese)
+  const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|eso|unos|hasta|entonces|d[oó]nde|cu[aá]l|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|poco|peque[nñ]o|nuevo|viejo|despacio|correcto|incorrecto|bueno|malo|cocina|ba[nñ]o|jard[ií]n|calle|quieres|tiene|tengo|voy|puedes|hacer|hecho|soy|eres|somos|necesito|puedo|hablar|ayuda|pintura|quiero|quisiera|pared)\b/;
+  if (esOnly.test(t)) return 'Spanish';
 
   // Arabic words romanized (Deepgram sometimes transcribes Arabic phonetically)
   const arWords = /\b(marhaba|ahlan|naam|la|aywa|shukran|areed|bayt|talaa|salam|inshallah|habibi|yalla|wallah|tayeb|mumkin|lazim|kwayes|zain|mish|ana|anta|howa|hiya|nahnu|fi|min|ila|ma|wein|lesh|kam|mata|kayf|meen)\b/i;
