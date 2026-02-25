@@ -20,15 +20,61 @@ if (!DEEPGRAM_API_KEY) throw new Error('Missing DEEPGRAM_API_KEY in environment'
 if (!N8N_WEBHOOK_URL) throw new Error('Missing N8N_WEBHOOK_URL in environment');
 if (!SERVER_URL) throw new Error('Missing SERVER_URL in environment');
 
+const languageMap = {
+  '1': 'English',
+  '2': 'Portuguese',
+  '3': 'Spanish',
+  '4': 'Mandarin',
+  '5': 'Arabic'
+};
+
+const deepgramLanguageMap = {
+  'English': 'en',
+  'Portuguese': 'pt',
+  'Spanish': 'es',
+  'Mandarin': 'zh',
+  'Arabic': 'ar'
+};
+
+const pollyVoiceMap = {
+  'English': 'Polly.Ruth-Neural',
+  'Portuguese': 'Polly.Vitoria-Neural',
+  'Spanish': 'Polly.Lupe-Neural',
+  'Mandarin': 'Polly.Zhiyu-Neural',
+  'Arabic': 'Polly.Zeina'
+};
+
 app.get('/', (req, res) => {
   res.send('Deepgram Twilio Server Running');
 });
 
-app.post('/incoming-call', async (req, res) => {
+// Step 1: Play language menu
+app.post('/incoming-call', (req, res) => {
   const callSid = req.body.CallSid || 'unknown';
-  const wsUrl = `wss://${SERVER_URL}/stream/${callSid}`;
-  console.log(`Incoming call. CallSid: ${callSid} | WS: ${wsUrl}`);
+  console.log(`Incoming call. CallSid: ${callSid}`);
 
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather numDigits="1" action="https://${SERVER_URL}/language-select" method="POST" timeout="10">
+    <Say voice="Polly.Ruth-Neural">Welcome to Victor's Paint Shop. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</Say>
+  </Gather>
+  <Say voice="Polly.Ruth-Neural">We did not receive your selection. Please call back and press a number to continue.</Say>
+</Response>`;
+
+  res.type('text/xml').send(twiml);
+});
+
+// Step 2: Handle keypress, send greeting, open stream
+app.post('/language-select', async (req, res) => {
+  const digit = req.body.Digits;
+  const callSid = req.body.CallSid || 'unknown';
+  const language = languageMap[digit] || 'English';
+  const voice = pollyVoiceMap[language];
+  const wsUrl = `wss://${SERVER_URL}/stream/${callSid}/${language}`;
+
+  console.log(`Language selected: ${language} (digit: ${digit}) | CallSid: ${callSid}`);
+
+  // Get greeting from n8n
   let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
   try {
     const response = await fetch(N8N_WEBHOOK_URL, {
@@ -38,7 +84,7 @@ app.post('/incoming-call', async (req, res) => {
         SpeechResult: 'CALL_STARTED',
         CallSid: callSid,
         StreamSid: '',
-        DetectedLanguage: 'English'
+        DetectedLanguage: language
       })
     });
     if (response.ok) {
@@ -52,13 +98,14 @@ app.post('/incoming-call', async (req, res) => {
         .replace(/&apos;/g, "'");
     }
   } catch (err) {
-    console.error('Error getting greeting:', err);
+    console.error('Error getting greeting from n8n:', err);
   }
 
   const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Ruth-Neural">${safeGreeting}</Say>
+  <Say voice="${voice}">${safeGreeting}</Say>
   <Start>
     <Stream url="${wsUrl}" />
   </Start>
@@ -68,68 +115,26 @@ app.post('/incoming-call', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-function mapLanguageCode(code) {
-  if (!code) return null;
-  const c = code.toLowerCase();
-  if (c.startsWith('pt')) return 'Portuguese';
-  if (c.startsWith('es')) return 'Spanish';
-  if (c.startsWith('zh') || c === 'cmn') return 'Mandarin';
-  if (c.startsWith('ar')) return 'Arabic';
-  if (c.startsWith('en')) return 'English';
-  return null;
-}
-
-function detectLanguageFromText(text) {
-  if (!text) return 'English';
-
-  // Arabic script
-  if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
-  // Chinese script
-  if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
-
-  const t = text.toLowerCase();
-
-  // Caller says language name
-  if (/\bportugu[eê]s(e)?\b/.test(t)) return 'Portuguese';
-  if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
-  if (/\bmandarin\b|\bchinese\b|\bchines\b/.test(t)) return 'Mandarin';
-  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
-
-  // Portuguese-ONLY words (not in Spanish)
-  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tamb[eé]m|tambem|tudo|muito|ruim|devagar|errado|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|oi)\b/;
-  if (ptOnly.test(t)) return 'Portuguese';
-
-  // Spanish-ONLY words (not in Portuguese)
-  const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|eso|unos|hasta|entonces|d[oó]nde|cu[aá]l|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|poco|peque[nñ]o|nuevo|viejo|despacio|correcto|incorrecto|bueno|malo|cocina|ba[nñ]o|jard[ií]n|calle|quieres|tiene|tengo|voy|puedes|hacer|hecho|soy|eres|somos|necesito|puedo|hablar|ayuda|pintura|quiero|quisiera|pared)\b/;
-  if (esOnly.test(t)) return 'Spanish';
-
-  // Arabic words romanized (Deepgram sometimes transcribes Arabic phonetically)
-  const arWords = /\b(marhaba|ahlan|naam|la|aywa|shukran|areed|bayt|talaa|salam|inshallah|habibi|yalla|wallah|tayeb|mumkin|lazim|kwayes|zain|mish|ana|anta|howa|hiya|nahnu|fi|min|ila|ma|wein|lesh|kam|mata|kayf|meen)\b/i;
-  if (arWords.test(t)) return 'Arabic';
-
-  // Mandarin words romanized (pinyin)
-  const zhWords = /\b(ni hao|nihao|xie xie|xiexie|wo|shi|yao|bu|hen|hao|ma|ne|ba|le|de|ge|zhe|na|mei|you|meiyou|duoshao|zenme|weishenme|shenme|shei|nali|jia|fang|qi|gong|zuo|lai|qu|chi|he|shui|men|ren|tian|ri|yue|nian|zhongguo|putonghua)\b/i;
-  if (zhWords.test(t)) return 'Mandarin';
-
-  return 'English';
-}
-
 wss.on('connection', (twilioWs, req) => {
-  const sessionId = req.url.split('/stream/')[1];
-  console.log(`New call session: ${sessionId}`);
+  const parts = req.url.split('/stream/')[1]?.split('/');
+  const sessionId = parts?.[0] || 'unknown';
+  const language = parts?.[1] || 'English';
+
+  console.log(`New call session: ${sessionId} | Language: ${language}`);
 
   let deepgramLive;
   let transcript = '';
   let silenceTimer;
   let callSid;
   let streamSid;
-  let lockedLanguage = null;
+  const lockedLanguage = language;
+  const dgLanguage = deepgramLanguageMap[language] || 'en';
 
   try {
     const deepgramClient = createClient(DEEPGRAM_API_KEY);
     deepgramLive = deepgramClient.listen.live({
       model: 'nova-2-general',
-      language: 'multi',
+      language: dgLanguage,
       punctuate: true,
       interim_results: true,
       endpointing: 800,
@@ -144,26 +149,12 @@ wss.on('connection', (twilioWs, req) => {
   }
 
   deepgramLive.on(LiveTranscriptionEvents.Open, () => {
-    console.log('Deepgram connected');
+    console.log(`Deepgram connected | Language: ${lockedLanguage}`);
   });
 
   deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
     const text = data.channel?.alternatives?.[0]?.transcript;
     if (!text) return;
-
-    const detectedCode = data.channel?.detected_language || data.detected_language || null;
-    const fromCode = mapLanguageCode(detectedCode);
-    const fromText = detectLanguageFromText(text);
-    const detectedLanguage = (fromCode && fromCode !== 'English') ? fromCode :
-                             (fromText !== 'English') ? fromText : 'English';
-
-    if (!lockedLanguage) {
-      lockedLanguage = detectedLanguage;
-      console.log(`Language locked to: ${lockedLanguage}`);
-    } else if (lockedLanguage === 'English' && detectedLanguage !== 'English') {
-      lockedLanguage = detectedLanguage;
-      console.log(`Language switched to: ${lockedLanguage}`);
-    }
 
     if (data.is_final) {
       transcript += ' ' + text;
@@ -185,7 +176,7 @@ wss.on('connection', (twilioWs, req) => {
               SpeechResult: fullTranscript,
               CallSid: callSid || sessionId,
               StreamSid: streamSid || '',
-              DetectedLanguage: lockedLanguage || 'English'
+              DetectedLanguage: lockedLanguage
             })
           });
 
