@@ -101,7 +101,7 @@ wss.on('connection', (twilioWs, req) => {
       encoding: 'mulaw',
       sample_rate: 8000,
       channels: 1,
-      detect_language: true
+
     });
   } catch (err) {
     console.error('Failed to create Deepgram client:', err);
