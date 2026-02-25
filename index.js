@@ -1,3 +1,4 @@
+// FILENAME: index.js
 require('dotenv').config();
 const express = require('express');
 const WebSocket = require('ws');
@@ -37,9 +38,7 @@ const dgLanguageMap = {
   'multi': 'multi'
 };
 
-app.get('/', (req, res) => {
-  res.send('Deepgram Twilio Server Running');
-});
+app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
 
 app.post('/incoming-call', async (req, res) => {
   const callSid = req.body.CallSid || 'unknown';
@@ -76,11 +75,9 @@ app.post('/incoming-call', async (req, res) => {
   <Start><Stream url="${wsUrl}" /></Start>
   <Pause length="600"/>
 </Response>`;
-
   res.type('text/xml').send(twiml);
 });
 
-// Fallback language menu route
 app.post('/language-menu', (req, res) => {
   const callSid = req.body.CallSid || 'unknown';
   console.log(`Language menu triggered for: ${callSid}`);
@@ -94,7 +91,6 @@ app.post('/language-menu', (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-// Handle language menu keypress
 app.post('/language-pick', async (req, res) => {
   const digit = req.body.Digits;
   const callSid = req.body.CallSid || 'unknown';
@@ -103,7 +99,6 @@ app.post('/language-pick', async (req, res) => {
   const voice = pollyVoiceMap[language];
   console.log(`Language picked: ${language} for ${callSid}`);
 
-  // Notify n8n to send greeting in selected language
   let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
   try {
     const response = await fetch(N8N_WEBHOOK_URL, {
@@ -172,10 +167,17 @@ function createDGLive(client, language) {
   });
 }
 
+// Estimate TTS playback duration in ms: ~130ms per word + 800ms buffer
+function estimateTTSDuration(text) {
+  if (!text) return 3000;
+  const words = text.trim().split(/\s+/).length;
+  return Math.max(3000, words * 130 + 800);
+}
+
 wss.on('connection', (twilioWs, req) => {
   const urlParts = req.url.split('/stream/')[1]?.split('/');
   const sessionId = urlParts?.[0] || 'unknown';
-  const preselectedLanguage = urlParts?.[1] || null; // set when coming from language-pick
+  const preselectedLanguage = urlParts?.[1] || null;
   console.log(`New call session: ${sessionId}${preselectedLanguage ? ' | Preselected: ' + preselectedLanguage : ''}`);
 
   const deepgramClient = createClient(DEEPGRAM_API_KEY);
@@ -183,6 +185,8 @@ wss.on('connection', (twilioWs, req) => {
   let audioBuffer = [];
   let transcript = '';
   let silenceTimer;
+  let speakingTimer;       // NEW: blocks transcripts during TTS playback
+  let isSpeaking = false;  // NEW: true while bot TTS is playing
   let callSid;
   let streamSid;
   let lockedLanguage = preselectedLanguage || null;
@@ -192,12 +196,22 @@ wss.on('connection', (twilioWs, req) => {
   let switching = false;
   let failedDetectionCount = 0;
 
+  function setSpeakingLock(responseText) {
+    isSpeaking = true;
+    clearTimeout(speakingTimer);
+    const duration = estimateTTSDuration(responseText);
+    console.log(`TTS lock set for ${duration}ms`);
+    speakingTimer = setTimeout(() => {
+      isSpeaking = false;
+      console.log('TTS lock cleared — listening for caller');
+    }, duration);
+  }
+
   function attachDGHandlers(dgLive, language) {
     dgLive.on(LiveTranscriptionEvents.Open, () => {
       console.log(`Deepgram ready | language: ${language}`);
       deepgramReady = true;
       switching = false;
-      // Flush buffered audio
       audioBuffer.forEach(chunk => {
         try { dgLive.send(chunk); } catch(e) {}
       });
@@ -208,11 +222,15 @@ wss.on('connection', (twilioWs, req) => {
       const text = data.channel?.alternatives?.[0]?.transcript;
       if (!text || switching) return;
 
-      // Phase 1: Language not yet confirmed — detect only, don't respond
+      // NEW: Ignore transcripts while bot TTS is playing
+      if (isSpeaking) {
+        console.log(`Ignored transcript during TTS playback: "${text}"`);
+        return;
+      }
+
       if (!languageConfirmed) {
         const detected = detectLanguageFromText(text);
         if (detected && detected !== 'English') {
-          // Non-English detected — switch Deepgram and lock language
           console.log(`Non-English detected: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
           languageConfirmed = true;
@@ -230,7 +248,6 @@ wss.on('connection', (twilioWs, req) => {
             languageConfirmed = true;
             console.log('Language confirmed: English');
           }
-          // After 2 failed detections, trigger fallback language menu
           if (failedDetectionCount >= 2 && !languageConfirmed) {
             console.log('Detection failed, triggering language menu');
             if (callSid) {
@@ -244,16 +261,16 @@ wss.on('connection', (twilioWs, req) => {
         return;
       }
 
-      // Phase 2: Language confirmed — process normally
+      // Phase 2: confirmed language
       if (data.is_final) {
         transcript += ' ' + text;
         clearTimeout(silenceTimer);
         silenceTimer = setTimeout(async () => {
           const full = transcript.trim();
           transcript = '';
-          if (!full || full.length < 5) return;
+          if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 1000);
+        }, 2500); // restored to 2500ms — 1000ms caused premature sends
       }
     });
 
@@ -285,13 +302,18 @@ wss.on('connection', (twilioWs, req) => {
       }
       const twimlResponse = await response.text();
       console.log('n8n response received, updating call');
+
+      // NEW: Extract text from TwiML to estimate speaking duration
+      const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
+      const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : twimlResponse;
+      setSpeakingLock(sayText);
+
       if (cSid) await updateTwilioCall(cSid, twimlResponse);
     } catch (err) {
       console.error('Error sending to n8n:', err);
     }
   }
 
-  // Start with multi language detection
   deepgramLive = createDGLive(deepgramClient, 'multi');
   attachDGHandlers(deepgramLive, 'multi');
 
@@ -324,6 +346,8 @@ wss.on('connection', (twilioWs, req) => {
 
   twilioWs.on('close', () => {
     console.log('Twilio disconnected');
+    clearTimeout(silenceTimer);
+    clearTimeout(speakingTimer);
     try { deepgramLive?.finish(); } catch(e) {}
   });
 
@@ -355,6 +379,4 @@ async function updateTwilioCall(callSid, twiml) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
