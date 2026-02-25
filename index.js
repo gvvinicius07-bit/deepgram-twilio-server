@@ -69,13 +69,29 @@ app.post('/incoming-call', async (req, res) => {
 
 // Map Deepgram language codes to friendly names
 function mapLanguage(code) {
-  if (!code) return 'English';
+  if (!code) return null;
   const c = code.toLowerCase();
   if (c.startsWith('pt')) return 'Portuguese';
   if (c.startsWith('es')) return 'Spanish';
   if (c.startsWith('zh') || c === 'cmn') return 'Mandarin';
   if (c.startsWith('ar')) return 'Arabic';
   if (c.startsWith('en')) return 'English';
+  return null;
+}
+
+// Detect language from transcript text as fallback
+function detectLanguageFromText(text) {
+  if (!text) return 'English';
+  // Arabic script
+  if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
+  // Chinese/Mandarin script
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
+  // Portuguese-specific words and patterns
+  const ptWords = /\b(oi|olá|sim|não|nao|você|voce|quero|casa|pintar|parede|preciso|gostaria|minha|meu|nossa|como|posso|falar|ajuda|tinta|obra|boa|bom|obrigado|obrigada|dia|por|favor|hoje|aqui|isso|esse|este|uma|uns|mas|com|para|que|ele|ela|seu|sua|nos|mim|me|te|lhe|já|já|até|então|porque|quando|onde|qual|quanto)\b/i;
+  if (ptWords.test(text)) return 'Portuguese';
+  // Spanish-specific words
+  const esWords = /\b(hola|sí|si|no|quiero|casa|pintar|pared|necesito|como|puedo|hablar|ayuda|pintura|gracias|buenos|días|dia|por|favor|hoy|aquí|aqui|eso|este|una|unos|pero|con|para|que|él|ella|su|sus|nos|mí|me|te|le|ya|hasta|entonces|porque|cuando|dónde|donde|cuál|cuanto)\b/i;
+  if (esWords.test(text)) return 'Spanish';
   return 'English';
 }
 
@@ -117,17 +133,22 @@ wss.on('connection', (twilioWs, req) => {
     const text = data.channel?.alternatives?.[0]?.transcript;
     if (!text) return;
 
-    // Get detected language from Deepgram
+    // Get detected language from Deepgram, fallback to text detection
     const detectedCode = data.channel?.detected_language || data.detected_language || null;
-    const detectedLanguage = mapLanguage(detectedCode);
+    const deepgramLanguage = mapLanguage(detectedCode);
+    const textLanguage = detectLanguageFromText(text);
+    const detectedLanguage = (deepgramLanguage && deepgramLanguage !== 'English') ? deepgramLanguage :
+                             (textLanguage !== 'English') ? textLanguage : 'English';
 
-    // Lock language on first non-English detection
-    if (!lockedLanguage) {
-      lockedLanguage = detectedLanguage;
-      console.log(`Language locked to: ${lockedLanguage} (code: ${detectedCode})`);
-    } else if (lockedLanguage === 'English' && detectedLanguage !== 'English') {
-      lockedLanguage = detectedLanguage;
-      console.log(`Language switched to: ${lockedLanguage}`);
+    // Lock language, never revert to English once a language is detected
+    if (!lockedLanguage || lockedLanguage === 'English') {
+      if (detectedLanguage !== 'English') {
+        lockedLanguage = detectedLanguage;
+        console.log(`Language switched to: ${lockedLanguage}`);
+      } else if (!lockedLanguage) {
+        lockedLanguage = 'English';
+        console.log(`Language locked to: English`);
+      }
     }
 
     if (data.is_final) {
