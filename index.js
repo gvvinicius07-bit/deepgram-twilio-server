@@ -38,7 +38,7 @@ app.post('/incoming-call', async (req, res) => {
         SpeechResult: 'CALL_STARTED',
         CallSid: callSid,
         StreamSid: '',
-        DetectedLanguage: 'en'
+        DetectedLanguage: 'English'
       })
     });
     if (response.ok) {
@@ -55,9 +55,10 @@ app.post('/incoming-call', async (req, res) => {
     console.error('Error getting greeting:', err);
   }
 
+  const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Ruth-Neural">${greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</Say>
+  <Say voice="Polly.Ruth-Neural">${safeGreeting}</Say>
   <Start>
     <Stream url="${wsUrl}" />
   </Start>
@@ -67,8 +68,7 @@ app.post('/incoming-call', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-// Map Deepgram language codes to friendly names
-function mapLanguage(code) {
+function mapLanguageCode(code) {
   if (!code) return null;
   const c = code.toLowerCase();
   if (c.startsWith('pt')) return 'Portuguese';
@@ -79,19 +79,38 @@ function mapLanguage(code) {
   return null;
 }
 
-// Detect language from transcript text as fallback
 function detectLanguageFromText(text) {
   if (!text) return 'English';
+
   // Arabic script
   if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
-  // Chinese/Mandarin script
+  // Chinese script
   if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
-  // Portuguese-specific words and patterns
-  const ptWords = /\b(oi|olá|sim|não|nao|você|voce|quero|casa|pintar|parede|preciso|gostaria|minha|meu|nossa|como|posso|falar|ajuda|tinta|obra|boa|bom|obrigado|obrigada|dia|por|favor|hoje|aqui|isso|esse|este|uma|uns|mas|com|para|que|ele|ela|seu|sua|nos|mim|me|te|lhe|já|já|até|então|porque|quando|onde|qual|quanto)\b/i;
-  if (ptWords.test(text)) return 'Portuguese';
-  // Spanish-specific words
-  const esWords = /\b(hola|sí|si|no|quiero|casa|pintar|pared|necesito|como|puedo|hablar|ayuda|pintura|gracias|buenos|días|dia|por|favor|hoy|aquí|aqui|eso|este|una|unos|pero|con|para|que|él|ella|su|sus|nos|mí|me|te|le|ya|hasta|entonces|porque|cuando|dónde|donde|cuál|cuanto)\b/i;
-  if (esWords.test(text)) return 'Spanish';
+
+  const t = text.toLowerCase();
+
+  // Caller says language name
+  if (/\bportugu[eê]s(e)?\b/.test(t)) return 'Portuguese';
+  if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
+  if (/\bmandarin\b|\bchinese\b|\bchines\b/.test(t)) return 'Mandarin';
+  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
+
+  // Portuguese words
+  const ptWords = /\b(oi|ol[aá]|sim|n[aã]o|voc[eê]|quero|queria|pintar|parede|preciso|gostaria|minha|meu|nossa|nosso|posso|falar|ajuda|tinta|obra|obrigado|obrigada|favor|hoje|aqui|isso|esse|este|esta|uma|umas|uns|mas|com|para|ele|ela|seu|sua|nos|mim|ent[aã]o|porque|quando|onde|qual|quanto|falo|fala|gosto|tenho|vou|vai|pode|fazer|seria|brasil|brazil|pin|pint|quer|voc|tud|tudo|tamb[eé]m|tambem|agora|depois|antes|sempre|nunca|muito|pouco|grande|pequeno|novo|velho|bonito|barato|caro|r[aá]pido|devagar|certo|errado|bom|mau|ruim|feliz|triste|casa|quarto|sala|cozinha|banheiro|jardim|rua|cidade|estado|pa[ií]s)\b/;
+  if (ptWords.test(t)) return 'Portuguese';
+
+  // Spanish words
+  const esWords = /\b(hola|s[ií]|quiero|quisiera|pintar|pared|necesito|puedo|hablar|ayuda|pintura|gracias|buenos|d[ií]as|favor|hoy|aqu[ií]|eso|este|esta|una|unos|pero|con|para|[eé]l|ella|su|sus|ya|hasta|entonces|porque|cuando|d[oó]nde|cu[aá]l|cuanto|espa[nñ]ol|mexico|colombia|argentina|todo|tambi[eé]n|ahora|despu[eé]s|antes|siempre|nunca|mucho|poco|grande|peque[nñ]o|nuevo|viejo|bonito|barato|caro|r[aá]pido|despacio|correcto|incorrecto|bueno|malo|feliz|triste|casa|cuarto|sala|cocina|ba[nñ]o|jard[ií]n|calle|ciudad|estado|pa[ií]s|quieres|tiene|tengo|voy|voy|puedes|hacer|hecho|ser[ií]a|soy|eres|somos|es|son)\b/;
+  if (esWords.test(t)) return 'Spanish';
+
+  // Arabic words romanized (Deepgram sometimes transcribes Arabic phonetically)
+  const arWords = /\b(marhaba|ahlan|naam|la|aywa|shukran|areed|bayt|talaa|salam|inshallah|habibi|yalla|wallah|tayeb|mumkin|lazim|kwayes|zain|mish|ana|anta|howa|hiya|nahnu|fi|min|ila|ma|wein|lesh|kam|mata|kayf|meen)\b/i;
+  if (arWords.test(t)) return 'Arabic';
+
+  // Mandarin words romanized (pinyin)
+  const zhWords = /\b(ni hao|nihao|xie xie|xiexie|wo|shi|yao|bu|hen|hao|ma|ne|ba|le|de|ge|zhe|na|mei|you|meiyou|duoshao|zenme|weishenme|shenme|shei|nali|jia|fang|qi|gong|zuo|lai|qu|chi|he|shui|men|ren|tian|ri|yue|nian|zhongguo|putonghua)\b/i;
+  if (zhWords.test(t)) return 'Mandarin';
+
   return 'English';
 }
 
@@ -116,8 +135,7 @@ wss.on('connection', (twilioWs, req) => {
       endpointing: 800,
       encoding: 'mulaw',
       sample_rate: 8000,
-      channels: 1,
-
+      channels: 1
     });
   } catch (err) {
     console.error('Failed to create Deepgram client:', err);
@@ -133,22 +151,18 @@ wss.on('connection', (twilioWs, req) => {
     const text = data.channel?.alternatives?.[0]?.transcript;
     if (!text) return;
 
-    // Get detected language from Deepgram, fallback to text detection
     const detectedCode = data.channel?.detected_language || data.detected_language || null;
-    const deepgramLanguage = mapLanguage(detectedCode);
-    const textLanguage = detectLanguageFromText(text);
-    const detectedLanguage = (deepgramLanguage && deepgramLanguage !== 'English') ? deepgramLanguage :
-                             (textLanguage !== 'English') ? textLanguage : 'English';
+    const fromCode = mapLanguageCode(detectedCode);
+    const fromText = detectLanguageFromText(text);
+    const detectedLanguage = (fromCode && fromCode !== 'English') ? fromCode :
+                             (fromText !== 'English') ? fromText : 'English';
 
-    // Lock language, never revert to English once a language is detected
-    if (!lockedLanguage || lockedLanguage === 'English') {
-      if (detectedLanguage !== 'English') {
-        lockedLanguage = detectedLanguage;
-        console.log(`Language switched to: ${lockedLanguage}`);
-      } else if (!lockedLanguage) {
-        lockedLanguage = 'English';
-        console.log(`Language locked to: English`);
-      }
+    if (!lockedLanguage) {
+      lockedLanguage = detectedLanguage;
+      console.log(`Language locked to: ${lockedLanguage}`);
+    } else if (lockedLanguage === 'English' && detectedLanguage !== 'English') {
+      lockedLanguage = detectedLanguage;
+      console.log(`Language switched to: ${lockedLanguage}`);
     }
 
     if (data.is_final) {
@@ -171,7 +185,7 @@ wss.on('connection', (twilioWs, req) => {
               SpeechResult: fullTranscript,
               CallSid: callSid || sessionId,
               StreamSid: streamSid || '',
-              DetectedLanguage: lockedLanguage
+              DetectedLanguage: lockedLanguage || 'English'
             })
           });
 
@@ -206,14 +220,12 @@ wss.on('connection', (twilioWs, req) => {
           streamSid = data.start.streamSid;
           console.log(`Stream started: ${callSid}`);
           break;
-
         case 'media':
           if (deepgramLive.getReadyState() === 1) {
             const audio = Buffer.from(data.media.payload, 'base64');
             deepgramLive.send(audio);
           }
           break;
-
         case 'stop':
           console.log('Stream stopped');
           deepgramLive.finish();
