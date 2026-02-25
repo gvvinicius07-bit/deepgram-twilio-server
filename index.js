@@ -29,7 +29,6 @@ app.post('/incoming-call', async (req, res) => {
   const wsUrl = `wss://${SERVER_URL}/stream/${callSid}`;
   console.log(`Incoming call. CallSid: ${callSid} | WS: ${wsUrl}`);
 
-  // Get greeting from n8n
   let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
   try {
     const response = await fetch(N8N_WEBHOOK_URL, {
@@ -38,12 +37,12 @@ app.post('/incoming-call', async (req, res) => {
       body: new URLSearchParams({
         SpeechResult: 'CALL_STARTED',
         CallSid: callSid,
-        StreamSid: ''
+        StreamSid: '',
+        DetectedLanguage: 'en'
       })
     });
     if (response.ok) {
       const twiml = await response.text();
-      // Extract text from Say tag
       const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
       if (match) greetingText = match[1]
         .replace(/&amp;/g, '&')
@@ -68,6 +67,18 @@ app.post('/incoming-call', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
+// Map Deepgram language codes to friendly names
+function mapLanguage(code) {
+  if (!code) return 'English';
+  const c = code.toLowerCase();
+  if (c.startsWith('pt')) return 'Portuguese';
+  if (c.startsWith('es')) return 'Spanish';
+  if (c.startsWith('zh') || c === 'cmn') return 'Mandarin';
+  if (c.startsWith('ar')) return 'Arabic';
+  if (c.startsWith('en')) return 'English';
+  return 'English';
+}
+
 wss.on('connection', (twilioWs, req) => {
   const sessionId = req.url.split('/stream/')[1];
   console.log(`New call session: ${sessionId}`);
@@ -77,6 +88,7 @@ wss.on('connection', (twilioWs, req) => {
   let silenceTimer;
   let callSid;
   let streamSid;
+  let lockedLanguage = null;
 
   try {
     const deepgramClient = createClient(DEEPGRAM_API_KEY);
@@ -88,7 +100,8 @@ wss.on('connection', (twilioWs, req) => {
       endpointing: 800,
       encoding: 'mulaw',
       sample_rate: 8000,
-      channels: 1
+      channels: 1,
+      detect_language: true
     });
   } catch (err) {
     console.error('Failed to create Deepgram client:', err);
@@ -104,6 +117,19 @@ wss.on('connection', (twilioWs, req) => {
     const text = data.channel?.alternatives?.[0]?.transcript;
     if (!text) return;
 
+    // Get detected language from Deepgram
+    const detectedCode = data.channel?.detected_language || data.detected_language || null;
+    const detectedLanguage = mapLanguage(detectedCode);
+
+    // Lock language on first non-English detection
+    if (!lockedLanguage) {
+      lockedLanguage = detectedLanguage;
+      console.log(`Language locked to: ${lockedLanguage} (code: ${detectedCode})`);
+    } else if (lockedLanguage === 'English' && detectedLanguage !== 'English') {
+      lockedLanguage = detectedLanguage;
+      console.log(`Language switched to: ${lockedLanguage}`);
+    }
+
     if (data.is_final) {
       transcript += ' ' + text;
       clearTimeout(silenceTimer);
@@ -114,7 +140,7 @@ wss.on('connection', (twilioWs, req) => {
 
         if (!fullTranscript || fullTranscript.length < 5) return;
 
-        console.log(`Transcript: ${fullTranscript}`);
+        console.log(`Transcript: ${fullTranscript} | Language: ${lockedLanguage}`);
 
         try {
           const response = await fetch(N8N_WEBHOOK_URL, {
@@ -123,7 +149,8 @@ wss.on('connection', (twilioWs, req) => {
             body: new URLSearchParams({
               SpeechResult: fullTranscript,
               CallSid: callSid || sessionId,
-              StreamSid: streamSid || ''
+              StreamSid: streamSid || '',
+              DetectedLanguage: lockedLanguage
             })
           });
 
