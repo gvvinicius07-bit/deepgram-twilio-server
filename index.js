@@ -33,7 +33,8 @@ const dgLanguageMap = {
   'Portuguese': 'pt',
   'Spanish': 'es',
   'Mandarin': 'zh',
-  'Arabic': 'ar'
+  'Arabic': 'ar',
+  'multi': 'multi'
 };
 
 app.get('/', (req, res) => {
@@ -80,7 +81,7 @@ app.post('/incoming-call', async (req, res) => {
 });
 
 function detectLanguageFromText(text) {
-  if (!text) return 'English';
+  if (!text) return null;
   if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
   if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
   const t = text.toLowerCase();
@@ -88,7 +89,7 @@ function detectLanguageFromText(text) {
   if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
   if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
   if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
-  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|ruim|devagar|errado|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim)\b/;
+  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|ruim|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola)\b/;
   if (ptOnly.test(t)) return 'Portuguese';
   const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
   if (esOnly.test(t)) return 'Spanish';
@@ -96,12 +97,12 @@ function detectLanguageFromText(text) {
   if (arRomanized.test(t)) return 'Arabic';
   const zhPinyin = /\b(nihao|ni hao|xiexie|xie xie|zhongguo|putonghua|meiyou|duoshao|zenme|weishenme)\b/i;
   if (zhPinyin.test(t)) return 'Mandarin';
-  return 'English';
+  return null;
 }
 
-function createDeepgramConnection(deepgramClient, language) {
+function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
-  return deepgramClient.listen.live({
+  return client.listen.live({
     model: 'nova-2-general',
     language: dgLang,
     punctuate: true,
@@ -124,63 +125,74 @@ wss.on('connection', (twilioWs, req) => {
   let silenceTimer;
   let callSid;
   let streamSid;
-  let lockedLanguage = null;
+  let lockedLanguage = null; // null = still detecting
+  let languageConfirmed = false;
   let deepgramReady = false;
+  let switching = false;
 
-  function startDeepgram(language) {
-    if (deepgramLive) {
-      try { deepgramLive.finish(); } catch(e) {}
-    }
-    deepgramLive = createDeepgramConnection(deepgramClient, language);
-    deepgramReady = false;
-
-    deepgramLive.on(LiveTranscriptionEvents.Open, () => {
-      console.log(`Deepgram connected | Language: ${language}`);
+  function attachDGHandlers(dgLive, language) {
+    dgLive.on(LiveTranscriptionEvents.Open, () => {
+      console.log(`Deepgram ready | language: ${language}`);
       deepgramReady = true;
+      switching = false;
       // Flush buffered audio
-      if (audioBuffer.length > 0) {
-        audioBuffer.forEach(chunk => deepgramLive.send(chunk));
-        audioBuffer = [];
-      }
+      audioBuffer.forEach(chunk => {
+        try { dgLive.send(chunk); } catch(e) {}
+      });
+      audioBuffer = [];
     });
 
-    deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
+    dgLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
       const text = data.channel?.alternatives?.[0]?.transcript;
-      if (!text) return;
+      if (!text || switching) return;
 
-      // Detect language from first utterance if not locked yet
-      if (!lockedLanguage || lockedLanguage === 'English') {
+      // Phase 1: Language not yet confirmed — detect only, don't respond
+      if (!languageConfirmed) {
         const detected = detectLanguageFromText(text);
-        if (detected !== 'English' && detected !== lockedLanguage) {
-          console.log(`Language detected: ${detected}, restarting Deepgram`);
+        if (detected && detected !== 'English') {
+          // Non-English detected — switch Deepgram and lock language
+          console.log(`Non-English detected: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
-          // Restart Deepgram with correct language
-          startDeepgram(lockedLanguage);
-          // Send language switch notification to n8n
-          sendToN8n('', callSid, streamSid, lockedLanguage);
-          return;
-        } else if (!lockedLanguage) {
+          languageConfirmed = true;
+          switching = true;
+          deepgramReady = false;
+          try { dgLive.finish(); } catch(e) {}
+          deepgramLive = createDGLive(deepgramClient, detected);
+          attachDGHandlers(deepgramLive, detected);
+          // Send language switch to n8n so agent sends greeting in correct language
+          await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
+        } else if (data.is_final && text.length > 3) {
+          // English confirmed on first real utterance
           lockedLanguage = 'English';
+          languageConfirmed = true;
+          console.log('Language confirmed: English');
+          // Send the transcript normally
+          await processTranscript(text);
         }
+        return;
       }
 
+      // Phase 2: Language confirmed — process normally
       if (data.is_final) {
         transcript += ' ' + text;
         clearTimeout(silenceTimer);
-
         silenceTimer = setTimeout(async () => {
-          const fullTranscript = transcript.trim();
+          const full = transcript.trim();
           transcript = '';
-          if (!fullTranscript || fullTranscript.length < 5) return;
-          console.log(`Transcript: ${fullTranscript} | Language: ${lockedLanguage}`);
-          await sendToN8n(fullTranscript, callSid, streamSid, lockedLanguage);
+          if (!full || full.length < 5) return;
+          await processTranscript(full);
         }, 1000);
       }
     });
 
-    deepgramLive.on(LiveTranscriptionEvents.Error, (err) => {
+    dgLive.on(LiveTranscriptionEvents.Error, (err) => {
       console.error('Deepgram error:', err);
     });
+  }
+
+  async function processTranscript(text) {
+    console.log(`Transcript: ${text} | Language: ${lockedLanguage}`);
+    await sendToN8n(text, callSid, streamSid, lockedLanguage || 'English');
   }
 
   async function sendToN8n(speechResult, cSid, sSid, language) {
@@ -207,8 +219,9 @@ wss.on('connection', (twilioWs, req) => {
     }
   }
 
-  // Start with multi-language detection first
-  startDeepgram('multi-detect');
+  // Start with multi language detection
+  deepgramLive = createDGLive(deepgramClient, 'multi');
+  attachDGHandlers(deepgramLive, 'multi');
 
   twilioWs.on('message', (message) => {
     try {
@@ -221,10 +234,10 @@ wss.on('connection', (twilioWs, req) => {
           break;
         case 'media':
           const audio = Buffer.from(data.media.payload, 'base64');
-          if (deepgramReady && deepgramLive?.getReadyState() === 1) {
-            deepgramLive.send(audio);
+          if (deepgramReady && deepgramLive?.getReadyState() === 1 && !switching) {
+            try { deepgramLive.send(audio); } catch(e) {}
           } else {
-            audioBuffer.push(audio);
+            if (audioBuffer.length < 500) audioBuffer.push(audio);
           }
           break;
         case 'stop':
@@ -246,8 +259,6 @@ wss.on('connection', (twilioWs, req) => {
     console.error('Twilio WebSocket error:', err);
   });
 });
-
-
 
 async function updateTwilioCall(callSid, twiml) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
