@@ -24,13 +24,41 @@ app.get('/', (req, res) => {
   res.send('Deepgram Twilio Server Running');
 });
 
-app.post('/incoming-call', (req, res) => {
-  const sessionId = req.body.CallSid || 'unknown';
-  const wsUrl = `wss://${SERVER_URL}/stream/${sessionId}`;
-  console.log(`Incoming call. SessionId: ${sessionId} | WS: ${wsUrl}`);
+app.post('/incoming-call', async (req, res) => {
+  const callSid = req.body.CallSid || 'unknown';
+  const wsUrl = `wss://${SERVER_URL}/stream/${callSid}`;
+  console.log(`Incoming call. CallSid: ${callSid} | WS: ${wsUrl}`);
+
+  // Get greeting from n8n
+  let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
+  try {
+    const response = await fetch(N8N_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        SpeechResult: 'CALL_STARTED',
+        CallSid: callSid,
+        StreamSid: ''
+      })
+    });
+    if (response.ok) {
+      const twiml = await response.text();
+      // Extract text from Say tag
+      const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
+      if (match) greetingText = match[1]
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'");
+    }
+  } catch (err) {
+    console.error('Error getting greeting:', err);
+  }
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Say voice="Polly.Ruth-Neural">${greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</Say>
   <Start>
     <Stream url="${wsUrl}" />
   </Start>
@@ -49,7 +77,6 @@ wss.on('connection', (twilioWs, req) => {
   let silenceTimer;
   let callSid;
   let streamSid;
-  let greetingSent = false;
 
   try {
     const deepgramClient = createClient(DEEPGRAM_API_KEY);
@@ -85,7 +112,7 @@ wss.on('connection', (twilioWs, req) => {
         const fullTranscript = transcript.trim();
         transcript = '';
 
-        if (!fullTranscript || fullTranscript.length < 3) return;
+        if (!fullTranscript || fullTranscript.length < 5) return;
 
         console.log(`Transcript: ${fullTranscript}`);
 
@@ -130,27 +157,6 @@ wss.on('connection', (twilioWs, req) => {
           callSid = data.start.callSid;
           streamSid = data.start.streamSid;
           console.log(`Stream started: ${callSid}`);
-
-          if (!greetingSent) {
-            greetingSent = true;
-            fetch(N8N_WEBHOOK_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: new URLSearchParams({
-                SpeechResult: 'CALL_STARTED',
-                CallSid: callSid,
-                StreamSid: streamSid
-              })
-            }).then(async (res) => {
-              if (res.ok) {
-                const twiml = await res.text();
-                console.log('Greeting sent, updating call');
-                await updateTwilioCall(callSid, twiml);
-              } else {
-                console.error(`Greeting n8n error: ${res.status}`);
-              }
-            }).catch(err => console.error('Error sending CALL_STARTED:', err));
-          }
           break;
 
         case 'media':
