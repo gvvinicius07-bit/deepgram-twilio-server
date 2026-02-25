@@ -1,4 +1,3 @@
-// FILENAME: index.js
 require('dotenv').config();
 const express = require('express');
 const WebSocket = require('ws');
@@ -267,7 +266,7 @@ wss.on('connection', (twilioWs, req) => {
           transcript = '';
           if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 5000); // 5 seconds — allows natural pauses between digit groups when dictating phone numbers
+        }, 3000); // 3 seconds — enough for breath between digit groups, fires promptly after you stop
       }
     });
 
