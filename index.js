@@ -20,22 +20,6 @@ if (!DEEPGRAM_API_KEY) throw new Error('Missing DEEPGRAM_API_KEY in environment'
 if (!N8N_WEBHOOK_URL) throw new Error('Missing N8N_WEBHOOK_URL in environment');
 if (!SERVER_URL) throw new Error('Missing SERVER_URL in environment');
 
-const languageMap = {
-  '1': 'English',
-  '2': 'Portuguese',
-  '3': 'Spanish',
-  '4': 'Mandarin',
-  '5': 'Arabic'
-};
-
-const deepgramLanguageMap = {
-  'English': 'en',
-  'Portuguese': 'pt',
-  'Spanish': 'es',
-  'Mandarin': 'zh',
-  'Arabic': 'ar'
-};
-
 const pollyVoiceMap = {
   'English': 'Polly.Ruth-Neural',
   'Portuguese': 'Polly.Vitoria-Neural',
@@ -44,37 +28,23 @@ const pollyVoiceMap = {
   'Arabic': 'Polly.Zeina'
 };
 
+const dgLanguageMap = {
+  'English': 'en',
+  'Portuguese': 'pt',
+  'Spanish': 'es',
+  'Mandarin': 'zh',
+  'Arabic': 'ar'
+};
+
 app.get('/', (req, res) => {
   res.send('Deepgram Twilio Server Running');
 });
 
-// Step 1: Play language menu
-app.post('/incoming-call', (req, res) => {
+app.post('/incoming-call', async (req, res) => {
   const callSid = req.body.CallSid || 'unknown';
+  const wsUrl = `wss://${SERVER_URL}/stream/${callSid}`;
   console.log(`Incoming call. CallSid: ${callSid}`);
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Gather numDigits="1" action="https://${SERVER_URL}/language-select" method="POST" timeout="10">
-    <Say voice="Polly.Ruth-Neural">Welcome to Victor's Paint Shop. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</Say>
-  </Gather>
-  <Say voice="Polly.Ruth-Neural">We did not receive your selection. Please call back and press a number to continue.</Say>
-</Response>`;
-
-  res.type('text/xml').send(twiml);
-});
-
-// Step 2: Handle keypress, send greeting, open stream
-app.post('/language-select', async (req, res) => {
-  const digit = req.body.Digits;
-  const callSid = req.body.CallSid || 'unknown';
-  const language = languageMap[digit] || 'English';
-  const voice = pollyVoiceMap[language];
-  const wsUrl = `wss://${SERVER_URL}/stream/${callSid}/${language}`;
-
-  console.log(`Language selected: ${language} (digit: ${digit}) | CallSid: ${callSid}`);
-
-  // Get greeting from n8n
   let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
   try {
     const response = await fetch(N8N_WEBHOOK_URL, {
@@ -84,123 +54,161 @@ app.post('/language-select', async (req, res) => {
         SpeechResult: 'CALL_STARTED',
         CallSid: callSid,
         StreamSid: '',
-        DetectedLanguage: language
+        DetectedLanguage: 'English'
       })
     });
     if (response.ok) {
       const twiml = await response.text();
       const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
       if (match) greetingText = match[1]
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'");
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
     }
   } catch (err) {
-    console.error('Error getting greeting from n8n:', err);
+    console.error('Error getting greeting:', err);
   }
 
   const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${voice}">${safeGreeting}</Say>
-  <Start>
-    <Stream url="${wsUrl}" />
-  </Start>
+  <Say voice="Polly.Ruth-Neural">${safeGreeting}</Say>
+  <Start><Stream url="${wsUrl}" /></Start>
   <Pause length="600"/>
 </Response>`;
 
   res.type('text/xml').send(twiml);
 });
 
+function detectLanguageFromText(text) {
+  if (!text) return 'English';
+  if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
+  const t = text.toLowerCase();
+  if (/\bportugu[eê]s(e)?\b/.test(t)) return 'Portuguese';
+  if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
+  if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
+  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
+  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|ruim|devagar|errado|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim)\b/;
+  if (ptOnly.test(t)) return 'Portuguese';
+  const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
+  if (esOnly.test(t)) return 'Spanish';
+  const arRomanized = /\b(marhaba|ahlan|naam|aywa|shukran|areed|salam|habibi|yalla|tayeb|mumkin|kwayes)\b/i;
+  if (arRomanized.test(t)) return 'Arabic';
+  const zhPinyin = /\b(nihao|ni hao|xiexie|xie xie|zhongguo|putonghua|meiyou|duoshao|zenme|weishenme)\b/i;
+  if (zhPinyin.test(t)) return 'Mandarin';
+  return 'English';
+}
+
+function createDeepgramConnection(deepgramClient, language) {
+  const dgLang = dgLanguageMap[language] || 'en';
+  return deepgramClient.listen.live({
+    model: 'nova-2-general',
+    language: dgLang,
+    punctuate: true,
+    interim_results: true,
+    endpointing: 800,
+    encoding: 'mulaw',
+    sample_rate: 8000,
+    channels: 1
+  });
+}
+
 wss.on('connection', (twilioWs, req) => {
-  const parts = req.url.split('/stream/')[1]?.split('/');
-  const sessionId = parts?.[0] || 'unknown';
-  const language = parts?.[1] || 'English';
+  const sessionId = req.url.split('/stream/')[1];
+  console.log(`New call session: ${sessionId}`);
 
-  console.log(`New call session: ${sessionId} | Language: ${language}`);
-
-  let deepgramLive;
+  const deepgramClient = createClient(DEEPGRAM_API_KEY);
+  let deepgramLive = null;
+  let audioBuffer = [];
   let transcript = '';
   let silenceTimer;
   let callSid;
   let streamSid;
-  const lockedLanguage = language;
-  const dgLanguage = deepgramLanguageMap[language] || 'en';
+  let lockedLanguage = null;
+  let deepgramReady = false;
 
-  try {
-    const deepgramClient = createClient(DEEPGRAM_API_KEY);
-    deepgramLive = deepgramClient.listen.live({
-      model: 'nova-2-general',
-      language: dgLanguage,
-      punctuate: true,
-      interim_results: true,
-      endpointing: 800,
-      encoding: 'mulaw',
-      sample_rate: 8000,
-      channels: 1
+  function startDeepgram(language) {
+    if (deepgramLive) {
+      try { deepgramLive.finish(); } catch(e) {}
+    }
+    deepgramLive = createDeepgramConnection(deepgramClient, language);
+    deepgramReady = false;
+
+    deepgramLive.on(LiveTranscriptionEvents.Open, () => {
+      console.log(`Deepgram connected | Language: ${language}`);
+      deepgramReady = true;
+      // Flush buffered audio
+      if (audioBuffer.length > 0) {
+        audioBuffer.forEach(chunk => deepgramLive.send(chunk));
+        audioBuffer = [];
+      }
     });
-  } catch (err) {
-    console.error('Failed to create Deepgram client:', err);
-    twilioWs.close();
-    return;
+
+    deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
+      const text = data.channel?.alternatives?.[0]?.transcript;
+      if (!text) return;
+
+      // Detect language from first utterance if not locked yet
+      if (!lockedLanguage || lockedLanguage === 'English') {
+        const detected = detectLanguageFromText(text);
+        if (detected !== 'English' && detected !== lockedLanguage) {
+          console.log(`Language detected: ${detected}, restarting Deepgram`);
+          lockedLanguage = detected;
+          // Restart Deepgram with correct language
+          startDeepgram(lockedLanguage);
+          // Send language switch notification to n8n
+          sendToN8n('', callSid, streamSid, lockedLanguage);
+          return;
+        } else if (!lockedLanguage) {
+          lockedLanguage = 'English';
+        }
+      }
+
+      if (data.is_final) {
+        transcript += ' ' + text;
+        clearTimeout(silenceTimer);
+
+        silenceTimer = setTimeout(async () => {
+          const fullTranscript = transcript.trim();
+          transcript = '';
+          if (!fullTranscript || fullTranscript.length < 5) return;
+          console.log(`Transcript: ${fullTranscript} | Language: ${lockedLanguage}`);
+          await sendToN8n(fullTranscript, callSid, streamSid, lockedLanguage);
+        }, 1000);
+      }
+    });
+
+    deepgramLive.on(LiveTranscriptionEvents.Error, (err) => {
+      console.error('Deepgram error:', err);
+    });
   }
 
-  deepgramLive.on(LiveTranscriptionEvents.Open, () => {
-    console.log(`Deepgram connected | Language: ${lockedLanguage}`);
-  });
-
-  deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
-    const text = data.channel?.alternatives?.[0]?.transcript;
-    if (!text) return;
-
-    if (data.is_final) {
-      transcript += ' ' + text;
-      clearTimeout(silenceTimer);
-
-      silenceTimer = setTimeout(async () => {
-        const fullTranscript = transcript.trim();
-        transcript = '';
-
-        if (!fullTranscript || fullTranscript.length < 5) return;
-
-        console.log(`Transcript: ${fullTranscript} | Language: ${lockedLanguage}`);
-
-        try {
-          const response = await fetch(N8N_WEBHOOK_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-              SpeechResult: fullTranscript,
-              CallSid: callSid || sessionId,
-              StreamSid: streamSid || '',
-              DetectedLanguage: lockedLanguage
-            })
-          });
-
-          if (!response.ok) {
-            console.error(`n8n returned ${response.status}: ${await response.text()}`);
-            return;
-          }
-
-          const twimlResponse = await response.text();
-          console.log('n8n response received, updating call');
-
-          if (callSid) {
-            await updateTwilioCall(callSid, twimlResponse);
-          }
-        } catch (err) {
-          console.error('Error sending to n8n:', err);
-        }
-      }, 1000);
+  async function sendToN8n(speechResult, cSid, sSid, language) {
+    try {
+      const response = await fetch(N8N_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          SpeechResult: speechResult,
+          CallSid: cSid || sessionId,
+          StreamSid: sSid || '',
+          DetectedLanguage: language || 'English'
+        })
+      });
+      if (!response.ok) {
+        console.error(`n8n returned ${response.status}: ${await response.text()}`);
+        return;
+      }
+      const twimlResponse = await response.text();
+      console.log('n8n response received, updating call');
+      if (cSid) await updateTwilioCall(cSid, twimlResponse);
+    } catch (err) {
+      console.error('Error sending to n8n:', err);
     }
-  });
+  }
 
-  deepgramLive.on(LiveTranscriptionEvents.Error, (err) => {
-    console.error('Deepgram error:', err);
-  });
+  // Start with multi-language detection first
+  startDeepgram('multi-detect');
 
   twilioWs.on('message', (message) => {
     try {
@@ -212,14 +220,16 @@ wss.on('connection', (twilioWs, req) => {
           console.log(`Stream started: ${callSid}`);
           break;
         case 'media':
-          if (deepgramLive.getReadyState() === 1) {
-            const audio = Buffer.from(data.media.payload, 'base64');
+          const audio = Buffer.from(data.media.payload, 'base64');
+          if (deepgramReady && deepgramLive?.getReadyState() === 1) {
             deepgramLive.send(audio);
+          } else {
+            audioBuffer.push(audio);
           }
           break;
         case 'stop':
           console.log('Stream stopped');
-          deepgramLive.finish();
+          try { deepgramLive?.finish(); } catch(e) {}
           break;
       }
     } catch (err) {
@@ -229,7 +239,7 @@ wss.on('connection', (twilioWs, req) => {
 
   twilioWs.on('close', () => {
     console.log('Twilio disconnected');
-    try { deepgramLive.finish(); } catch (e) {}
+    try { deepgramLive?.finish(); } catch(e) {}
   });
 
   twilioWs.on('error', (err) => {
@@ -237,15 +247,12 @@ wss.on('connection', (twilioWs, req) => {
   });
 });
 
+
+
 async function updateTwilioCall(callSid, twiml) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
-
-  if (!accountSid || !authToken) {
-    console.error('Missing Twilio credentials in environment');
-    return;
-  }
-
+  if (!accountSid || !authToken) return;
   try {
     const response = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`,
@@ -258,9 +265,7 @@ async function updateTwilioCall(callSid, twiml) {
         body: new URLSearchParams({ Twiml: twiml })
       }
     );
-    if (!response.ok) {
-      console.error(`Twilio update failed: ${response.status} ${await response.text()}`);
-    }
+    if (!response.ok) console.error(`Twilio update failed: ${response.status} ${await response.text()}`);
   } catch (err) {
     console.error('Error updating Twilio call:', err);
   }
