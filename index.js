@@ -80,6 +80,64 @@ app.post('/incoming-call', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
+// Fallback language menu route
+app.post('/language-menu', (req, res) => {
+  const callSid = req.body.CallSid || 'unknown';
+  console.log(`Language menu triggered for: ${callSid}`);
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather numDigits="1" action="https://${SERVER_URL}/language-pick" method="POST" timeout="10">
+    <Say voice="Polly.Ruth-Neural">It seems like you may be having trouble. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</Say>
+  </Gather>
+  <Redirect method="POST">https://${SERVER_URL}/language-menu</Redirect>
+</Response>`;
+  res.type('text/xml').send(twiml);
+});
+
+// Handle language menu keypress
+app.post('/language-pick', async (req, res) => {
+  const digit = req.body.Digits;
+  const callSid = req.body.CallSid || 'unknown';
+  const languageMap = { '1': 'English', '2': 'Portuguese', '3': 'Spanish', '4': 'Mandarin', '5': 'Arabic' };
+  const language = languageMap[digit] || 'English';
+  const voice = pollyVoiceMap[language];
+  console.log(`Language picked: ${language} for ${callSid}`);
+
+  // Notify n8n to send greeting in selected language
+  let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
+  try {
+    const response = await fetch(N8N_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        SpeechResult: 'LANGUAGE_SWITCHED',
+        CallSid: callSid,
+        StreamSid: '',
+        DetectedLanguage: language
+      })
+    });
+    if (response.ok) {
+      const twiml = await response.text();
+      const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
+      if (match) greetingText = match[1]
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+    }
+  } catch (err) {
+    console.error('Error getting language greeting:', err);
+  }
+
+  const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const wsUrl = `wss://${SERVER_URL}/stream/${callSid}/${language}`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${voice}">${safeGreeting}</Say>
+  <Start><Stream url="${wsUrl}" /></Start>
+  <Pause length="600"/>
+</Response>`;
+  res.type('text/xml').send(twiml);
+});
+
 function detectLanguageFromText(text) {
   if (!text) return null;
   if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
@@ -115,8 +173,10 @@ function createDGLive(client, language) {
 }
 
 wss.on('connection', (twilioWs, req) => {
-  const sessionId = req.url.split('/stream/')[1];
-  console.log(`New call session: ${sessionId}`);
+  const urlParts = req.url.split('/stream/')[1]?.split('/');
+  const sessionId = urlParts?.[0] || 'unknown';
+  const preselectedLanguage = urlParts?.[1] || null; // set when coming from language-pick
+  console.log(`New call session: ${sessionId}${preselectedLanguage ? ' | Preselected: ' + preselectedLanguage : ''}`);
 
   const deepgramClient = createClient(DEEPGRAM_API_KEY);
   let deepgramLive = null;
@@ -125,10 +185,12 @@ wss.on('connection', (twilioWs, req) => {
   let silenceTimer;
   let callSid;
   let streamSid;
-  let lockedLanguage = null; // null = still detecting
-  let languageConfirmed = false;
+  let lockedLanguage = preselectedLanguage || null;
+  let languageConfirmed = preselectedLanguage ? true : false;
+  let englishUtteranceCount = 0;
   let deepgramReady = false;
   let switching = false;
+  let failedDetectionCount = 0;
 
   function attachDGHandlers(dgLive, language) {
     dgLive.on(LiveTranscriptionEvents.Open, () => {
@@ -159,14 +221,24 @@ wss.on('connection', (twilioWs, req) => {
           try { dgLive.finish(); } catch(e) {}
           deepgramLive = createDGLive(deepgramClient, detected);
           attachDGHandlers(deepgramLive, detected);
-          // Send language switch to n8n so agent sends greeting in correct language
           await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
         } else if (data.is_final && text.length > 3) {
-          // English confirmed on first real utterance
-          lockedLanguage = 'English';
-          languageConfirmed = true;
-          console.log('Language confirmed: English');
-          // Send the transcript normally
+          englishUtteranceCount++;
+          failedDetectionCount++;
+          if (englishUtteranceCount >= 3) {
+            lockedLanguage = 'English';
+            languageConfirmed = true;
+            console.log('Language confirmed: English');
+          }
+          // After 2 failed detections, trigger fallback language menu
+          if (failedDetectionCount >= 2 && !languageConfirmed) {
+            console.log('Detection failed, triggering language menu');
+            if (callSid) {
+              const menuTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Redirect method="POST">https://${SERVER_URL}/language-menu</Redirect></Response>`;
+              await updateTwilioCall(callSid, menuTwiml);
+            }
+            return;
+          }
           await processTranscript(text);
         }
         return;
