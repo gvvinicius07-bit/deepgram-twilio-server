@@ -167,7 +167,6 @@ function createDGLive(client, language) {
   });
 }
 
-// Estimate TTS playback duration in ms: ~130ms per word + 800ms buffer
 function estimateTTSDuration(text) {
   if (!text) return 3000;
   const words = text.trim().split(/\s+/).length;
@@ -185,8 +184,8 @@ wss.on('connection', (twilioWs, req) => {
   let audioBuffer = [];
   let transcript = '';
   let silenceTimer;
-  let speakingTimer;       // NEW: blocks transcripts during TTS playback
-  let isSpeaking = false;  // NEW: true while bot TTS is playing
+  let speakingTimer;
+  let isSpeaking = false;
   let callSid;
   let streamSid;
   let lockedLanguage = preselectedLanguage || null;
@@ -222,7 +221,6 @@ wss.on('connection', (twilioWs, req) => {
       const text = data.channel?.alternatives?.[0]?.transcript;
       if (!text || switching) return;
 
-      // NEW: Ignore transcripts while bot TTS is playing
       if (isSpeaking) {
         console.log(`Ignored transcript during TTS playback: "${text}"`);
         return;
@@ -261,7 +259,6 @@ wss.on('connection', (twilioWs, req) => {
         return;
       }
 
-      // Phase 2: confirmed language
       if (data.is_final) {
         transcript += ' ' + text;
         clearTimeout(silenceTimer);
@@ -270,7 +267,7 @@ wss.on('connection', (twilioWs, req) => {
           transcript = '';
           if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 2500); // restored to 2500ms — 1000ms caused premature sends
+        }, 5000); // 5 seconds — allows natural pauses between digit groups when dictating phone numbers
       }
     });
 
@@ -303,7 +300,6 @@ wss.on('connection', (twilioWs, req) => {
       const twimlResponse = await response.text();
       console.log('n8n response received, updating call');
 
-      // NEW: Extract text from TwiML to estimate speaking duration
       const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
       const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : twimlResponse;
       setSpeakingLock(sayText);
