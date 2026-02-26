@@ -171,7 +171,7 @@ function createDGLive(client, language) {
     language: dgLang,
     punctuate: true,
     interim_results: true,
-    endpointing: 800,
+    endpointing: 300,
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1
