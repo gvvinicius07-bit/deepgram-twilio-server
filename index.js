@@ -45,7 +45,7 @@ const deepgramLangMap = {
   'en': 'English'
 };
 
-// FIX 3: Global session registry — kills old session when new one opens for same CallSid
+// Global session registry — kills old session when new one opens for same CallSid
 const activeSessions = new Map();
 
 app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
@@ -143,7 +143,6 @@ app.post('/language-pick', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-// FIX 1: Text-based fallback detection (used when Deepgram detected_language is unknown)
 function detectLanguageFromText(text) {
   if (!text) return null;
   if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
@@ -153,7 +152,7 @@ function detectLanguageFromText(text) {
   if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
   if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
   if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
-  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|marcar|pintura)\b/;
+  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|marcar|pintura|procuraria|gostaria)\b/;
   if (ptOnly.test(t)) return 'Portuguese';
   const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
   if (esOnly.test(t)) return 'Spanish';
@@ -166,7 +165,8 @@ function detectLanguageFromText(text) {
 
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
-  const options = {
+  // NOTE: no detect_language param — language: 'multi' is itself the detection mode
+  return client.listen.live({
     model: 'nova-2-general',
     language: dgLang,
     punctuate: true,
@@ -175,12 +175,7 @@ function createDGLive(client, language) {
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1
-  };
-  // FIX 1: Explicitly enable language detection when in multi mode
-  if (dgLang === 'multi') {
-    options.detect_language = true;
-  }
-  return client.listen.live(options);
+  });
 }
 
 function estimateTTSDuration(text) {
@@ -195,7 +190,7 @@ wss.on('connection', (twilioWs, req) => {
   const preselectedLanguage = urlParts?.[1] || null;
   console.log(`New call session: ${sessionId}${preselectedLanguage ? ' | Preselected: ' + preselectedLanguage : ''}`);
 
-  // FIX 3: Kill any existing session for this CallSid before starting new one
+  // Kill any existing session for this CallSid
   if (activeSessions.has(sessionId)) {
     console.log(`Killing old session for ${sessionId}`);
     try { activeSessions.get(sessionId)(); } catch(e) {}
@@ -207,7 +202,6 @@ wss.on('connection', (twilioWs, req) => {
   let transcript = '';
   let silenceTimer;
   let speakingTimer;
-  // FIX 2: If preselected language, start with speaking lock to block greeting TTS bleedthrough
   let isSpeaking = preselectedLanguage ? true : false;
   let callSid = sessionId;
   let streamSid;
@@ -219,16 +213,15 @@ wss.on('connection', (twilioWs, req) => {
   let failedDetectionCount = 0;
   let destroyed = false;
 
-  // FIX 2: Initial TTS lock for preselected language greeting (5 seconds)
+  // Block TTS bleedthrough for greeting when language was preselected via keypad
   if (preselectedLanguage) {
-    console.log(`Initial TTS lock for preselected language greeting: 5000ms`);
+    console.log(`Initial TTS lock 5000ms for preselected language greeting`);
     speakingTimer = setTimeout(() => {
       isSpeaking = false;
       console.log('Initial TTS lock cleared — listening for caller');
     }, 5000);
   }
 
-  // Register destroy function for this session
   activeSessions.set(sessionId, () => {
     destroyed = true;
     clearTimeout(silenceTimer);
@@ -270,12 +263,11 @@ wss.on('connection', (twilioWs, req) => {
       }
 
       if (!languageConfirmed) {
-        // FIX 1: Try Deepgram's detected_language first, fall back to text regex
+        // Try Deepgram's detected_language first, fall back to text regex
         const dgDetected = data.channel?.detected_language;
         let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
 
         if (!detected || detected === 'English') {
-          // Deepgram unsure — try text pattern as fallback
           const textDetected = detectLanguageFromText(text);
           if (textDetected && textDetected !== 'English') {
             detected = textDetected;
