@@ -181,7 +181,7 @@ function createDGLive(client, language) {
 function estimateTTSDuration(text) {
   if (!text) return 4000;
   const words = text.trim().split(/\s+/).length;
-  return Math.max(4000, words * 200 + 1000);
+  return Math.max(2000, words * 150 + 500);
 }
 
 wss.on('connection', (twilioWs, req) => {
