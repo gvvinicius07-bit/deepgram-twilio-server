@@ -317,7 +317,7 @@ wss.on('connection', (twilioWs, req) => {
           transcript = '';
           if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 3000);
+        }, 4500); // increased for phone number dictation with natural pauses
       }
     });
 
