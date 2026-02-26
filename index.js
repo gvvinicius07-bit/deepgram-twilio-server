@@ -37,6 +37,14 @@ const dgLanguageMap = {
   'multi': 'multi'
 };
 
+const deepgramLangMap = {
+  'pt': 'Portuguese',
+  'es': 'Spanish',
+  'zh': 'Mandarin',
+  'ar': 'Arabic',
+  'en': 'English'
+};
+
 app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
 
 app.post('/incoming-call', async (req, res) => {
@@ -132,26 +140,6 @@ app.post('/language-pick', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-function detectLanguageFromText(text) {
-  if (!text) return null;
-  if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
-  if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
-  const t = text.toLowerCase();
-  if (/\bportugu[eê]s(e)?\b/.test(t)) return 'Portuguese';
-  if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
-  if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
-  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
-  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|ruim|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola)\b/;
-  if (ptOnly.test(t)) return 'Portuguese';
-  const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
-  if (esOnly.test(t)) return 'Spanish';
-  const arRomanized = /\b(marhaba|ahlan|naam|aywa|shukran|areed|salam|habibi|yalla|tayeb|mumkin|kwayes)\b/i;
-  if (arRomanized.test(t)) return 'Arabic';
-  const zhPinyin = /\b(nihao|ni hao|xiexie|xie xie|zhongguo|putonghua|meiyou|duoshao|zenme|weishenme)\b/i;
-  if (zhPinyin.test(t)) return 'Mandarin';
-  return null;
-}
-
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
   return client.listen.live({
@@ -167,9 +155,9 @@ function createDGLive(client, language) {
 }
 
 function estimateTTSDuration(text) {
-  if (!text) return 3000;
+  if (!text) return 4000;
   const words = text.trim().split(/\s+/).length;
-  return Math.max(3000, words * 130 + 800);
+  return Math.max(4000, words * 200 + 1000);
 }
 
 wss.on('connection', (twilioWs, req) => {
@@ -226,7 +214,11 @@ wss.on('connection', (twilioWs, req) => {
       }
 
       if (!languageConfirmed) {
-        const detected = detectLanguageFromText(text);
+        // Use Deepgram's own detected_language field — reliable, not regex on mangled text
+        const dgDetected = data.channel?.detected_language;
+        const detected = dgDetected ? deepgramLangMap[dgDetected] : null;
+        console.log(`Detection phase — Deepgram says: ${dgDetected || 'unknown'} | text: "${text}"`);
+
         if (detected && detected !== 'English') {
           console.log(`Non-English detected: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
@@ -266,7 +258,7 @@ wss.on('connection', (twilioWs, req) => {
           transcript = '';
           if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 3000); // 3 seconds — enough for breath between digit groups, fires promptly after you stop
+        }, 3000);
       }
     });
 
@@ -309,8 +301,10 @@ wss.on('connection', (twilioWs, req) => {
     }
   }
 
-  deepgramLive = createDGLive(deepgramClient, 'multi');
-  attachDGHandlers(deepgramLive, 'multi');
+  // Start Deepgram with preselected language if set, otherwise multi for detection
+  const startLanguage = preselectedLanguage || 'multi';
+  deepgramLive = createDGLive(deepgramClient, startLanguage);
+  attachDGHandlers(deepgramLive, startLanguage);
 
   twilioWs.on('message', (message) => {
     try {
