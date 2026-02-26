@@ -45,6 +45,9 @@ const deepgramLangMap = {
   'en': 'English'
 };
 
+// FIX 3: Global session registry — kills old session when new one opens for same CallSid
+const activeSessions = new Map();
+
 app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
 
 app.post('/incoming-call', async (req, res) => {
@@ -140,9 +143,30 @@ app.post('/language-pick', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
+// FIX 1: Text-based fallback detection (used when Deepgram detected_language is unknown)
+function detectLanguageFromText(text) {
+  if (!text) return null;
+  if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
+  const t = text.toLowerCase();
+  if (/\bportugu[eê]s(e)?\b/.test(t)) return 'Portuguese';
+  if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
+  if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
+  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
+  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|marcar|pintura)\b/;
+  if (ptOnly.test(t)) return 'Portuguese';
+  const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
+  if (esOnly.test(t)) return 'Spanish';
+  const arRomanized = /\b(marhaba|ahlan|naam|aywa|shukran|areed|salam|habibi|yalla|tayeb|mumkin|kwayes)\b/i;
+  if (arRomanized.test(t)) return 'Arabic';
+  const zhPinyin = /\b(nihao|ni hao|xiexie|xie xie|zhongguo|putonghua|meiyou|duoshao|zenme|weishenme)\b/i;
+  if (zhPinyin.test(t)) return 'Mandarin';
+  return null;
+}
+
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
-  return client.listen.live({
+  const options = {
     model: 'nova-2-general',
     language: dgLang,
     punctuate: true,
@@ -151,7 +175,12 @@ function createDGLive(client, language) {
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1
-  });
+  };
+  // FIX 1: Explicitly enable language detection when in multi mode
+  if (dgLang === 'multi') {
+    options.detect_language = true;
+  }
+  return client.listen.live(options);
 }
 
 function estimateTTSDuration(text) {
@@ -166,14 +195,21 @@ wss.on('connection', (twilioWs, req) => {
   const preselectedLanguage = urlParts?.[1] || null;
   console.log(`New call session: ${sessionId}${preselectedLanguage ? ' | Preselected: ' + preselectedLanguage : ''}`);
 
+  // FIX 3: Kill any existing session for this CallSid before starting new one
+  if (activeSessions.has(sessionId)) {
+    console.log(`Killing old session for ${sessionId}`);
+    try { activeSessions.get(sessionId)(); } catch(e) {}
+  }
+
   const deepgramClient = createClient(DEEPGRAM_API_KEY);
   let deepgramLive = null;
   let audioBuffer = [];
   let transcript = '';
   let silenceTimer;
   let speakingTimer;
-  let isSpeaking = false;
-  let callSid;
+  // FIX 2: If preselected language, start with speaking lock to block greeting TTS bleedthrough
+  let isSpeaking = preselectedLanguage ? true : false;
+  let callSid = sessionId;
   let streamSid;
   let lockedLanguage = preselectedLanguage || null;
   let languageConfirmed = preselectedLanguage ? true : false;
@@ -181,6 +217,25 @@ wss.on('connection', (twilioWs, req) => {
   let deepgramReady = false;
   let switching = false;
   let failedDetectionCount = 0;
+  let destroyed = false;
+
+  // FIX 2: Initial TTS lock for preselected language greeting (5 seconds)
+  if (preselectedLanguage) {
+    console.log(`Initial TTS lock for preselected language greeting: 5000ms`);
+    speakingTimer = setTimeout(() => {
+      isSpeaking = false;
+      console.log('Initial TTS lock cleared — listening for caller');
+    }, 5000);
+  }
+
+  // Register destroy function for this session
+  activeSessions.set(sessionId, () => {
+    destroyed = true;
+    clearTimeout(silenceTimer);
+    clearTimeout(speakingTimer);
+    try { deepgramLive?.finish(); } catch(e) {}
+    activeSessions.delete(sessionId);
+  });
 
   function setSpeakingLock(responseText) {
     isSpeaking = true;
@@ -205,6 +260,7 @@ wss.on('connection', (twilioWs, req) => {
     });
 
     dgLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
+      if (destroyed) return;
       const text = data.channel?.alternatives?.[0]?.transcript;
       if (!text || switching) return;
 
@@ -214,13 +270,23 @@ wss.on('connection', (twilioWs, req) => {
       }
 
       if (!languageConfirmed) {
-        // Use Deepgram's own detected_language field — reliable, not regex on mangled text
+        // FIX 1: Try Deepgram's detected_language first, fall back to text regex
         const dgDetected = data.channel?.detected_language;
-        const detected = dgDetected ? deepgramLangMap[dgDetected] : null;
-        console.log(`Detection phase — Deepgram says: ${dgDetected || 'unknown'} | text: "${text}"`);
+        let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
+
+        if (!detected || detected === 'English') {
+          // Deepgram unsure — try text pattern as fallback
+          const textDetected = detectLanguageFromText(text);
+          if (textDetected && textDetected !== 'English') {
+            detected = textDetected;
+            console.log(`Text fallback detected: ${detected} from "${text}"`);
+          }
+        } else {
+          console.log(`Deepgram detected: ${detected} (${dgDetected})`);
+        }
 
         if (detected && detected !== 'English') {
-          console.log(`Non-English detected: ${detected}, switching Deepgram`);
+          console.log(`Non-English confirmed: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
           languageConfirmed = true;
           switching = true;
@@ -254,6 +320,7 @@ wss.on('connection', (twilioWs, req) => {
         transcript += ' ' + text;
         clearTimeout(silenceTimer);
         silenceTimer = setTimeout(async () => {
+          if (destroyed) return;
           const full = transcript.trim();
           transcript = '';
           if (!full || full.length < 3) return;
@@ -268,11 +335,13 @@ wss.on('connection', (twilioWs, req) => {
   }
 
   async function processTranscript(text) {
+    if (destroyed) return;
     console.log(`Transcript: ${text} | Language: ${lockedLanguage}`);
     await sendToN8n(text, callSid, streamSid, lockedLanguage || 'English');
   }
 
   async function sendToN8n(speechResult, cSid, sSid, language) {
+    if (destroyed) return;
     try {
       const response = await fetch(N8N_WEBHOOK_URL, {
         method: 'POST',
@@ -301,12 +370,12 @@ wss.on('connection', (twilioWs, req) => {
     }
   }
 
-  // Start Deepgram with preselected language if set, otherwise multi for detection
   const startLanguage = preselectedLanguage || 'multi';
   deepgramLive = createDGLive(deepgramClient, startLanguage);
   attachDGHandlers(deepgramLive, startLanguage);
 
   twilioWs.on('message', (message) => {
+    if (destroyed) return;
     try {
       const data = JSON.parse(message);
       switch (data.event) {
@@ -326,6 +395,7 @@ wss.on('connection', (twilioWs, req) => {
         case 'stop':
           console.log('Stream stopped');
           try { deepgramLive?.finish(); } catch(e) {}
+          activeSessions.delete(sessionId);
           break;
       }
     } catch (err) {
@@ -334,10 +404,13 @@ wss.on('connection', (twilioWs, req) => {
   });
 
   twilioWs.on('close', () => {
-    console.log('Twilio disconnected');
-    clearTimeout(silenceTimer);
-    clearTimeout(speakingTimer);
-    try { deepgramLive?.finish(); } catch(e) {}
+    if (!destroyed) {
+      console.log('Twilio disconnected');
+      clearTimeout(silenceTimer);
+      clearTimeout(speakingTimer);
+      try { deepgramLive?.finish(); } catch(e) {}
+      activeSessions.delete(sessionId);
+    }
   });
 
   twilioWs.on('error', (err) => {
