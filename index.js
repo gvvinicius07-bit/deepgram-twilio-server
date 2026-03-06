@@ -39,10 +39,20 @@ const dgLanguageMap = {
 
 const deepgramLangMap = {
   'pt': 'Portuguese',
+  'pt-BR': 'Portuguese',
+  'pt-PT': 'Portuguese',
   'es': 'Spanish',
+  'es-419': 'Spanish',
+  'es-ES': 'Spanish',
+  'es-US': 'Spanish',
   'zh': 'Mandarin',
+  'zh-CN': 'Mandarin',
+  'zh-TW': 'Mandarin',
   'ar': 'Arabic',
-  'en': 'English'
+  'ar-001': 'Arabic',
+  'en': 'English',
+  'en-US': 'English',
+  'en-GB': 'English'
 };
 
 // Global session registry — kills old session when new one opens for same CallSid
@@ -152,7 +162,7 @@ function detectLanguageFromText(text) {
   if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
   if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
   if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
-  const ptOnly = /\b(oi|voc[eê]|obrigado|obrigada|n[aã]o|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|ent[aã]o|tambem|tamb[eé]m|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|marcar|pintura|procuraria|gostaria)\b/;
+  const ptOnly = /\b(oi|voce|obrigado|obrigada|nao|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|entao|tambem|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|marcar|pintura|procuraria|queria|pintar|sala|quarto|cozinha|corredor|porta|janela|teto|piso|cor|branco|cinza|azul|verde|cores|orcamento|preco|valor|agenda|agendar|ligar|falar|atender|servico|servicos|casa|apartamento|imovel|reforma|renovacao|interior|exterior)\b/;
   if (ptOnly.test(t)) return 'Portuguese';
   const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
   if (esOnly.test(t)) return 'Spanish';
