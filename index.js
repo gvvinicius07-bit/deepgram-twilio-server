@@ -171,7 +171,7 @@ function createDGLive(client, language) {
     language: dgLang,
     punctuate: true,
     interim_results: true,
-    endpointing: 300,
+    endpointing: 800,
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1
@@ -290,12 +290,12 @@ wss.on('connection', (twilioWs, req) => {
         } else if (data.is_final && text.length > 3) {
           englishUtteranceCount++;
           failedDetectionCount++;
-          if (englishUtteranceCount >= 3) {
+          if (englishUtteranceCount >= 1) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             console.log('Language confirmed: English');
           }
-          if (failedDetectionCount >= 2 && !languageConfirmed) {
+          if (failedDetectionCount >= 6 && !languageConfirmed) {
             console.log('Detection failed, triggering language menu');
             if (callSid) {
               const menuTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Redirect method="POST">https://${SERVER_URL}/language-menu</Redirect></Response>`;
