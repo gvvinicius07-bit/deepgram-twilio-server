@@ -287,13 +287,23 @@ wss.on('connection', (twilioWs, req) => {
           deepgramLive = createDGLive(deepgramClient, detected);
           attachDGHandlers(deepgramLive, detected);
           await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
-        } else if (data.is_final && text.length > 3) {
+        } else if (detected === 'English' && data.is_final && text.length > 3) {
+          // Deepgram explicitly detected English
           englishUtteranceCount++;
-          failedDetectionCount++;
-          if (englishUtteranceCount >= 1) {
+          if (englishUtteranceCount >= 2) {
             lockedLanguage = 'English';
             languageConfirmed = true;
-            console.log('Language confirmed: English');
+            console.log('Language confirmed: English (explicit Deepgram detection)');
+          }
+          await processTranscript(text);
+        } else if (data.is_final && text.length > 3) {
+          // Ambiguous - no clear language detected yet
+          englishUtteranceCount++;
+          failedDetectionCount++;
+          if (englishUtteranceCount >= 3) {
+            lockedLanguage = 'English';
+            languageConfirmed = true;
+            console.log('Language confirmed: English (fallback)');
           }
           if (failedDetectionCount >= 6 && !languageConfirmed) {
             console.log('Detection failed, triggering language menu');
