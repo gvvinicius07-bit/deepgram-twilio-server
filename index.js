@@ -181,7 +181,7 @@ function createDGLive(client, language) {
 function estimateTTSDuration(text) {
   if (!text) return 4000;
   const words = text.trim().split(/\s+/).length;
-  return Math.max(2000, words * 150 + 500);
+  return Math.max(4000, words * 450 + 1500);
 }
 
 wss.on('connection', (twilioWs, req) => {
@@ -317,7 +317,7 @@ wss.on('connection', (twilioWs, req) => {
           transcript = '';
           if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 4500); // increased for phone number dictation with natural pauses
+        }, 2000); // natural conversational pause
       }
     });
 
