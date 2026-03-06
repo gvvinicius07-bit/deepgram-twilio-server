@@ -277,15 +277,22 @@ wss.on('connection', (twilioWs, req) => {
         const dgDetected = data.channel?.detected_language;
         let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
 
-        // Always run text detection regardless of what Deepgram says
-        const textDetected = detectLanguageFromText(text);
-        if (textDetected && textDetected !== 'English') {
-          detected = textDetected;
-          console.log(`Text detected: ${detected} from "${text}"`);
-        } else if (detected && detected !== 'English') {
+        const wordCount = text.trim().split(/\s+/).length;
+
+        // Text detection only on 2+ word utterances to avoid single-word false positives
+        // (e.g. "oi" transcribed as "Hoy" which is Spanish)
+        if (wordCount >= 2) {
+          const textDetected = detectLanguageFromText(text);
+          if (textDetected && textDetected !== 'English') {
+            detected = textDetected;
+            console.log(`Text detected: ${detected} from "${text}"`);
+          }
+        }
+        if (detected && detected !== 'English') {
           console.log(`Deepgram detected: ${detected} (${dgDetected})`);
         }
 
+        // Switch to non-English if Deepgram detected it, OR text matched on 2+ words
         if (detected && detected !== 'English') {
           console.log(`Non-English confirmed: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
