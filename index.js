@@ -277,13 +277,12 @@ wss.on('connection', (twilioWs, req) => {
         const dgDetected = data.channel?.detected_language;
         let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
 
-        if (!detected || detected === 'English') {
-          const textDetected = detectLanguageFromText(text);
-          if (textDetected && textDetected !== 'English') {
-            detected = textDetected;
-            console.log(`Text fallback detected: ${detected} from "${text}"`);
-          }
-        } else {
+        // Always run text detection regardless of what Deepgram says
+        const textDetected = detectLanguageFromText(text);
+        if (textDetected && textDetected !== 'English') {
+          detected = textDetected;
+          console.log(`Text detected: ${detected} from "${text}"`);
+        } else if (detected && detected !== 'English') {
           console.log(`Deepgram detected: ${detected} (${dgDetected})`);
         }
 
@@ -297,8 +296,8 @@ wss.on('connection', (twilioWs, req) => {
           deepgramLive = createDGLive(deepgramClient, detected);
           attachDGHandlers(deepgramLive, detected);
           await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
-        } else if (detected === 'English' && data.is_final && text.length > 3) {
-          // Deepgram explicitly detected English
+        } else if (detected === 'English' && data.is_final && text.trim().split(/\s+/).length >= 3) {
+          // Deepgram explicitly detected English with enough words
           englishUtteranceCount++;
           if (englishUtteranceCount >= 2) {
             lockedLanguage = 'English';
@@ -306,8 +305,8 @@ wss.on('connection', (twilioWs, req) => {
             console.log('Language confirmed: English (explicit Deepgram detection)');
           }
           await processTranscript(text);
-        } else if (data.is_final && text.length > 3) {
-          // Ambiguous - no clear language detected yet
+        } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
+          // Ambiguous with enough words - increment counters
           englishUtteranceCount++;
           failedDetectionCount++;
           if (englishUtteranceCount >= 3) {
