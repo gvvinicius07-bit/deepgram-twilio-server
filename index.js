@@ -76,9 +76,14 @@ const PHONE_REQUEST_PATTERNS = [
   /número de celular/i,
   /número de teléfono/i,
   /teléfono/i,
-  /电话号码/,
+  /\btelefone\b/i,      // Portuguese: "Qual é o seu telefone?"
+  /\bcelular\b/i,       // Portuguese/Spanish alternative
+  /电话/,               // Mandarin: 电话号码, 电话
+  /手机/,               // Mandarin: 手机号码 (mobile number)
   /رقم الهاتف/,
-  /رقم هاتف/
+  /رقم هاتف/,
+  /الهاتف/,             // Arabic: shorter form
+  /هاتفك/               // Arabic: "your phone"
 ];
 
 // Detect that phone was confirmed and AI moved on (address question)
