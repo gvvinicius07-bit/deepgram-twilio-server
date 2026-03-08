@@ -65,29 +65,9 @@ app.post('/incoming-call', async (req, res) => {
   const wsUrl = `wss://${SERVER_URL}/stream/${callSid}`;
   console.log(`Incoming call. CallSid: ${callSid}`);
 
-  let greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
-  try {
-    const response = await fetch(N8N_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        SpeechResult: 'CALL_STARTED',
-        CallSid: callSid,
-        StreamSid: '',
-        DetectedLanguage: 'English'
-      })
-    });
-    if (response.ok) {
-      const twiml = await response.text();
-      const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
-      if (match && match[1].trim()) greetingText = match[1]
-        .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-    }
-  } catch (err) {
-    console.error('Error getting greeting:', err);
-  }
-
+  // Always use hardcoded greeting — n8n CALL_STARTED returned garbled output (AI wraps
+  // the silence token in quotes, causing Polly to literally speak "quote space quote").
+  const greetingText = "Hi! I'm Victor's Paint Shop AI assistant, how can I help you today?";
   const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
