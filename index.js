@@ -80,7 +80,7 @@ app.post('/incoming-call', async (req, res) => {
     if (response.ok) {
       const twiml = await response.text();
       const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
-      if (match) greetingText = match[1]
+      if (match && match[1].trim()) greetingText = match[1]
         .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
     }
@@ -134,7 +134,7 @@ app.post('/language-pick', async (req, res) => {
     if (response.ok) {
       const twiml = await response.text();
       const match = twiml.match(/<Say[^>]*>(.*?)<\/Say>/s);
-      if (match) greetingText = match[1]
+      if (match && match[1].trim()) greetingText = match[1]
         .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
     }
@@ -199,6 +199,11 @@ wss.on('connection', (twilioWs, req) => {
   const sessionId = urlParts?.[0] || 'unknown';
   const preselectedLanguage = urlParts?.[1] || null;
   console.log(`New call session: ${sessionId}${preselectedLanguage ? ' | Preselected: ' + preselectedLanguage : ''}`);
+
+  // Keepalive: prevent Railway proxy from dropping idle WebSocket connections
+  const keepaliveInterval = setInterval(() => {
+    if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
+  }, 30000);
 
   // Kill any existing session for this CallSid
   if (activeSessions.has(sessionId)) {
@@ -275,7 +280,8 @@ wss.on('connection', (twilioWs, req) => {
       if (!languageConfirmed) {
         // Try Deepgram's detected_language first, fall back to text regex
         const dgDetected = data.channel?.detected_language;
-        let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
+        const dgConfidence = data.channel?.language_confidence ?? 1;
+        let detected = (dgDetected && dgConfidence >= 0.85) ? deepgramLangMap[dgDetected] : null;
 
         const wordCount = text.trim().split(/\s+/).length;
 
@@ -412,6 +418,7 @@ wss.on('connection', (twilioWs, req) => {
           break;
         case 'stop':
           console.log('Stream stopped');
+          clearInterval(keepaliveInterval);
           try { deepgramLive?.finish(); } catch(e) {}
           activeSessions.delete(sessionId);
           break;
@@ -422,6 +429,7 @@ wss.on('connection', (twilioWs, req) => {
   });
 
   twilioWs.on('close', () => {
+    clearInterval(keepaliveInterval);
     if (!destroyed) {
       console.log('Twilio disconnected');
       clearTimeout(silenceTimer);
