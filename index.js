@@ -62,6 +62,10 @@ const activeSessions = new Map();
 // (prevents voice transcripts from being processed during DTMF entry)
 const dtmfSessions = new Set();
 
+// Track sessions where phone collection is in progress (initial ask OR re-ask after "No")
+// Stays true until address question is detected, meaning phone was confirmed.
+const phoneCollectionActive = new Set();
+
 // Track confirmed language per callSid (needed by /phone-dtmf-received)
 const sessionLanguages = new Map();
 
@@ -77,9 +81,23 @@ const PHONE_REQUEST_PATTERNS = [
   /رقم هاتف/
 ];
 
+// Detect that phone was confirmed and AI moved on (address question)
+const PHONE_CONFIRMED_PATTERNS = [
+  /address/i,
+  /endere[çc]o/i,
+  /dirección/i,
+  /地址/,
+  /العنوان/
+];
+
 function isPhoneNumberRequest(text) {
   if (!text) return false;
   return PHONE_REQUEST_PATTERNS.some(p => p.test(text));
+}
+
+function isPhoneConfirmed(text) {
+  if (!text) return false;
+  return PHONE_CONFIRMED_PATTERNS.some(p => p.test(text));
 }
 
 app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
@@ -165,7 +183,8 @@ app.post('/phone-dtmf-received', async (req, res) => {
 
   console.log(`DTMF phone received: "${digits}" for ${callSid} (${language})`);
 
-  // Remove from DTMF mode — WebSocket transcripts can resume
+  // Remove from active DTMF entry — WebSocket transcripts can resume
+  // (phoneCollectionActive stays set until address question confirms phone was accepted)
   dtmfSessions.delete(callSid);
 
   // Send digits to n8n as if the caller spoke them
@@ -191,8 +210,9 @@ app.post('/phone-dtmf-received', async (req, res) => {
     // Update the live call with n8n's TwiML (AI reads back the number for confirmation)
     await updateTwilioCall(callSid, twimlResponse);
 
-    // Return empty TwiML to end the Gather action — call control passes back to updateTwilioCall
-    res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    // Return a brief pause — gives updateTwilioCall time to register before Twilio
+    // would otherwise hang up on the empty action response.
+    res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Pause length="5"/></Response>');
   } catch (err) {
     console.error('Error processing DTMF phone:', err);
     res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry, there was a problem. Please try again.</Say></Response>');
@@ -442,21 +462,32 @@ wss.on('connection', (twilioWs, req) => {
       const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
       const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : twimlResponse;
 
-      // If AI is asking for phone number → switch to DTMF keypad instead of voice
-      if (isPhoneNumberRequest(sayText)) {
+      // Once phone is confirmed (AI asks for address), clear phone collection state
+      if (phoneCollectionActive.has(cSid) && isPhoneConfirmed(sayText)) {
+        console.log(`Phone confirmed — exiting DTMF mode for ${cSid}`);
+        phoneCollectionActive.delete(cSid);
+      }
+
+      // If AI is asking for phone number (first ask OR re-ask after "No") → DTMF keypad
+      const isDTMFNeeded = isPhoneNumberRequest(sayText) ||
+        (phoneCollectionActive.has(cSid) && /\bnumber\b/i.test(sayText));
+      if (isDTMFNeeded) {
         console.log(`Phone number request detected — switching to DTMF for ${cSid}`);
+        phoneCollectionActive.add(cSid);
         dtmfSessions.add(cSid);
 
         const voice = pollyVoiceMap[language] || 'Polly.Ruth-Neural';
-        const safeSay = sayText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const dtmfTwiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Pause length="1"/>
-  <Say voice="${voice}">${safeSay} Please type it on your keypad.</Say>
-  <Gather input="dtmf" numDigits="10" action="https://${SERVER_URL}/phone-dtmf-received" method="POST" timeout="30">
-  </Gather>
-  <Say voice="${voice}">I didn't receive your number. Please call back and try again.</Say>
-</Response>`;
+        // Inject DTMF gather into the existing n8n TwiML — avoids double-encoding HTML entities.
+        // Strip keep-alive <Pause length="600"/> (not needed during DTMF gather),
+        // append keypad instruction to the Say text, then add Gather + fallback.
+        const dtmfTwiml = twimlResponse
+          .replace(/<Pause length="600"[^>]*\/>/gi, '')
+          .replace(/<\/Say>/i, ' Please type it on your keypad.</Say>')
+          .replace(/<\/Response>/i,
+            `<Gather input="dtmf" numDigits="10" action="https://${SERVER_URL}/phone-dtmf-received" method="POST" timeout="30"></Gather>` +
+            `<Say voice="${voice}">I didn&apos;t receive your number. Please call back and try again.</Say>` +
+            `</Response>`
+          );
         setSpeakingLock(sayText + ' Please type it on your keypad.');
         if (cSid) await updateTwilioCall(cSid, dtmfTwiml);
         return;
@@ -498,6 +529,7 @@ wss.on('connection', (twilioWs, req) => {
           activeSessions.delete(sessionId);
           sessionLanguages.delete(sessionId);
           dtmfSessions.delete(sessionId);
+          phoneCollectionActive.delete(sessionId);
           break;
       }
     } catch (err) {
@@ -515,6 +547,7 @@ wss.on('connection', (twilioWs, req) => {
       activeSessions.delete(sessionId);
       sessionLanguages.delete(sessionId);
       dtmfSessions.delete(sessionId);
+      phoneCollectionActive.delete(sessionId);
     }
   });
 
