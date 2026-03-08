@@ -58,6 +58,30 @@ const deepgramLangMap = {
 // Global session registry — kills old session when new one opens for same CallSid
 const activeSessions = new Map();
 
+// Track which sessions are currently collecting phone via DTMF keypad
+// (prevents voice transcripts from being processed during DTMF entry)
+const dtmfSessions = new Set();
+
+// Track confirmed language per callSid (needed by /phone-dtmf-received)
+const sessionLanguages = new Map();
+
+// Detect when the AI is asking for a phone number (all 5 languages)
+const PHONE_REQUEST_PATTERNS = [
+  /phone number/i,
+  /número de telefone/i,
+  /número de celular/i,
+  /número de teléfono/i,
+  /teléfono/i,
+  /电话号码/,
+  /رقم الهاتف/,
+  /رقم هاتف/
+];
+
+function isPhoneNumberRequest(text) {
+  if (!text) return false;
+  return PHONE_REQUEST_PATTERNS.some(p => p.test(text));
+}
+
 app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
 
 app.post('/incoming-call', async (req, res) => {
@@ -131,6 +155,48 @@ app.post('/language-pick', async (req, res) => {
   <Pause length="600"/>
 </Response>`;
   res.type('text/xml').send(twiml);
+});
+
+// Called by Twilio after caller enters phone number on keypad
+app.post('/phone-dtmf-received', async (req, res) => {
+  const digits = req.body.Digits || '';
+  const callSid = req.body.CallSid || req.query.callSid || '';
+  const language = sessionLanguages.get(callSid) || 'English';
+
+  console.log(`DTMF phone received: "${digits}" for ${callSid} (${language})`);
+
+  // Remove from DTMF mode — WebSocket transcripts can resume
+  dtmfSessions.delete(callSid);
+
+  // Send digits to n8n as if the caller spoke them
+  try {
+    const n8nResponse = await fetch(N8N_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        SpeechResult: digits,
+        CallSid: callSid,
+        StreamSid: '',
+        DetectedLanguage: language
+      })
+    });
+    if (!n8nResponse.ok) {
+      console.error(`n8n returned ${n8nResponse.status} for DTMF`);
+      res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry, there was a problem. Please hold.</Say></Response>');
+      return;
+    }
+    const twimlResponse = await n8nResponse.text();
+    console.log('n8n DTMF response received, updating call');
+
+    // Update the live call with n8n's TwiML (AI reads back the number for confirmation)
+    await updateTwilioCall(callSid, twimlResponse);
+
+    // Return empty TwiML to end the Gather action — call control passes back to updateTwilioCall
+    res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  } catch (err) {
+    console.error('Error processing DTMF phone:', err);
+    res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry, there was a problem. Please try again.</Say></Response>');
+  }
 });
 
 function detectLanguageFromText(text) {
@@ -252,6 +318,12 @@ wss.on('connection', (twilioWs, req) => {
       const text = data.channel?.alternatives?.[0]?.transcript;
       if (!text || switching) return;
 
+      // Don't process voice while caller is entering digits on keypad
+      if (dtmfSessions.has(callSid)) {
+        console.log(`Ignored transcript — DTMF phone entry in progress: "${text}"`);
+        return;
+      }
+
       if (isSpeaking) {
         console.log(`Ignored transcript during TTS playback: "${text}"`);
         return;
@@ -283,6 +355,7 @@ wss.on('connection', (twilioWs, req) => {
           console.log(`Non-English confirmed: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
           languageConfirmed = true;
+          sessionLanguages.set(callSid, detected);
           switching = true;
           deepgramReady = false;
           try { dgLive.finish(); } catch(e) {}
@@ -295,6 +368,7 @@ wss.on('connection', (twilioWs, req) => {
           if (englishUtteranceCount >= 1) {
             lockedLanguage = 'English';
             languageConfirmed = true;
+            sessionLanguages.set(callSid, 'English');
             console.log('Language confirmed: English (explicit Deepgram detection)');
           }
           await processTranscript(text);
@@ -305,6 +379,7 @@ wss.on('connection', (twilioWs, req) => {
           if (englishUtteranceCount >= 2) {
             lockedLanguage = 'English';
             languageConfirmed = true;
+            sessionLanguages.set(callSid, 'English');
             console.log('Language confirmed: English (fallback)');
           }
           if (failedDetectionCount >= 6 && !languageConfirmed) {
@@ -366,8 +441,28 @@ wss.on('connection', (twilioWs, req) => {
 
       const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
       const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : twimlResponse;
-      setSpeakingLock(sayText);
 
+      // If AI is asking for phone number → switch to DTMF keypad instead of voice
+      if (isPhoneNumberRequest(sayText)) {
+        console.log(`Phone number request detected — switching to DTMF for ${cSid}`);
+        dtmfSessions.add(cSid);
+
+        const voice = pollyVoiceMap[language] || 'Polly.Ruth-Neural';
+        const safeSay = sayText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const dtmfTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Pause length="1"/>
+  <Say voice="${voice}">${safeSay} Please type it on your keypad.</Say>
+  <Gather input="dtmf" numDigits="10" action="https://${SERVER_URL}/phone-dtmf-received" method="POST" timeout="30">
+  </Gather>
+  <Say voice="${voice}">I didn't receive your number. Please call back and try again.</Say>
+</Response>`;
+        setSpeakingLock(sayText + ' Please type it on your keypad.');
+        if (cSid) await updateTwilioCall(cSid, dtmfTwiml);
+        return;
+      }
+
+      setSpeakingLock(sayText);
       if (cSid) await updateTwilioCall(cSid, twimlResponse);
     } catch (err) {
       console.error('Error sending to n8n:', err);
@@ -401,6 +496,8 @@ wss.on('connection', (twilioWs, req) => {
           clearInterval(keepaliveInterval);
           try { deepgramLive?.finish(); } catch(e) {}
           activeSessions.delete(sessionId);
+          sessionLanguages.delete(sessionId);
+          dtmfSessions.delete(sessionId);
           break;
       }
     } catch (err) {
@@ -416,6 +513,8 @@ wss.on('connection', (twilioWs, req) => {
       clearTimeout(speakingTimer);
       try { deepgramLive?.finish(); } catch(e) {}
       activeSessions.delete(sessionId);
+      sessionLanguages.delete(sessionId);
+      dtmfSessions.delete(sessionId);
     }
   });
 
