@@ -161,7 +161,7 @@ function createDGLive(client, language) {
     language: dgLang,
     punctuate: true,
     interim_results: true,
-    endpointing: 800,
+    endpointing: 2000,
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1
@@ -292,7 +292,7 @@ wss.on('connection', (twilioWs, req) => {
         } else if (detected === 'English' && data.is_final && text.trim().split(/\s+/).length >= 3) {
           // Deepgram explicitly detected English with enough words
           englishUtteranceCount++;
-          if (englishUtteranceCount >= 2) {
+          if (englishUtteranceCount >= 1) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             console.log('Language confirmed: English (explicit Deepgram detection)');
@@ -302,7 +302,7 @@ wss.on('connection', (twilioWs, req) => {
           // Ambiguous with enough words - increment counters
           englishUtteranceCount++;
           failedDetectionCount++;
-          if (englishUtteranceCount >= 3) {
+          if (englishUtteranceCount >= 2) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             console.log('Language confirmed: English (fallback)');
