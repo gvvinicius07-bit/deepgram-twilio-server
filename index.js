@@ -66,6 +66,10 @@ const dtmfSessions = new Set();
 // Stays true until address question is detected, meaning phone was confirmed.
 const phoneCollectionActive = new Set();
 
+// Track sessions where AI has asked for phone but customer hasn't responded yet.
+// We listen to their voice first; only fall back to DTMF if digits weren't captured.
+const phoneCollectionPending = new Set();
+
 // Track confirmed language per callSid (needed by /phone-dtmf-received)
 const sessionLanguages = new Map();
 
@@ -224,23 +228,38 @@ app.post('/phone-dtmf-received', async (req, res) => {
   }
 });
 
+function normalizeAccents(str) {
+  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Very distinctive single-word Portuguese markers (won't be mistaken for other languages)
+const PT_SINGLE_WORD = /^(oi|ola|tchau|obrigado|obrigada|sim|nao)$/;
+
 function detectLanguageFromText(text) {
   if (!text) return null;
   if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
   if (/[\u4E00-\u9FFF]/.test(text)) return 'Mandarin';
   const t = text.toLowerCase();
-  if (/\bportugu[eê]s(e)?\b/.test(t)) return 'Portuguese';
-  if (/\bespan[oó]l\b|\bspanish\b/.test(t)) return 'Spanish';
-  if (/\bmandarin\b|\bchinese\b/.test(t)) return 'Mandarin';
-  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(t)) return 'Arabic';
-  const ptOnly = /\b(oi|voce|obrigado|obrigada|nao|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|entao|tambem|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|ola|marcar|pintura|procuraria|queria|pintar|sala|quarto|cozinha|corredor|porta|janela|teto|piso|cor|branco|cinza|azul|verde|cores|orcamento|preco|valor|agenda|agendar|ligar|falar|atender|servico|servicos|casa|apartamento|imovel|reforma|renovacao|interior|exterior)\b/;
-  if (ptOnly.test(t)) return 'Portuguese';
-  const esOnly = /\b(hola|gracias|buenos|d[ií]as|hoy|aqu[ií]|hasta|entonces|d[oó]nde|espa[nñ]ol|mexico|colombia|argentina|tambi[eé]n|ahora|despu[eé]s|siempre|nunca|mucho|peque[nñ]o|despacio|cocina|ba[nñ]o|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
-  if (esOnly.test(t)) return 'Spanish';
+  const tn = normalizeAccents(t); // accent-stripped version for matching
+  if (/\bportugu[eê]s(e)?\b/.test(tn)) return 'Portuguese';
+  if (/\bespan[oó]l\b|\bspanish\b/.test(tn)) return 'Spanish';
+  if (/\bmandarin\b|\bchinese\b/.test(tn)) return 'Mandarin';
+  if (/\barab[eic]+\b|\b[aá]rabe\b/.test(tn)) return 'Arabic';
+
+  // Single-word check for unmistakable Portuguese greetings
+  const singleWord = tn.trim();
+  if (PT_SINGLE_WORD.test(singleWord)) return 'Portuguese';
+
+  // Multi-word Portuguese detection (accent-normalized)
+  const ptOnly = /\b(oi|ola|voce|obrigado|obrigada|nao|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|entao|tambem|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|marcar|pintura|pintar|sala|quarto|corredor|porta|janela|teto|piso|cor|branco|cinza|azul|verde|cores|orcamento|preco|valor|agenda|agendar|ligar|atender|servico|servicos|casa|apartamento|imovel|reforma|renovacao|interior|exterior|portugues|queria|precisa|preciso|posso|pode|vou|falo|falamos|falando|falar|estou|esta|estao|somos|sou|sera|seria|mesmo|mesmo|tambem|tambem|tudo|tudo|bom|boa|dia|tarde|noite|obrigado|obrigada|tchau|ate|logo|por|favor|desculpe|desculpa|nao|sim|claro|certo|ok|hum|ah)\b/;
+  if (ptOnly.test(tn)) return 'Portuguese';
+
+  const esOnly = /\b(hola|gracias|buenos|dias|hoy|aqui|hasta|entonces|donde|espanol|mexico|colombia|argentina|tambien|ahora|despues|siempre|nunca|mucho|pequeno|despacio|cocina|bano|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
+  if (esOnly.test(tn)) return 'Spanish';
   const arRomanized = /\b(marhaba|ahlan|naam|aywa|shukran|areed|salam|habibi|yalla|tayeb|mumkin|kwayes)\b/i;
-  if (arRomanized.test(t)) return 'Arabic';
+  if (arRomanized.test(tn)) return 'Arabic';
   const zhPinyin = /\b(nihao|ni hao|xiexie|xie xie|zhongguo|putonghua|meiyou|duoshao|zenme|weishenme)\b/i;
-  if (zhPinyin.test(t)) return 'Mandarin';
+  if (zhPinyin.test(tn)) return 'Mandarin';
   return null;
 }
 
@@ -438,9 +457,48 @@ wss.on('connection', (twilioWs, req) => {
     });
   }
 
+  const phoneApologyMessages = {
+    'English':    "I'm sorry, I didn't understand that perfectly. Could you type it on the keypad just to be 100% sure?",
+    'Portuguese': "Desculpe, não entendi direito. Pode digitar no teclado para ter certeza?",
+    'Spanish':    "Lo siento, no entendí bien. ¿Podría escribir su número en el teclado?",
+    'Mandarin':   "对不起，我没听清楚。您能在键盘上输入您的电话号码吗？",
+    'Arabic':     "آسف، لم أفهم ذلك جيداً. هل يمكنك كتابة رقمك على لوحة المفاتيح؟"
+  };
+
   async function processTranscript(text) {
     if (destroyed) return;
-    console.log(`Transcript: ${text} | Language: ${lockedLanguage}`);
+    console.log(`Transcript: "${text}" | Language: ${lockedLanguage}`);
+
+    // If we're waiting for the customer to speak their phone number, check digits first
+    if (phoneCollectionPending.has(callSid)) {
+      const digits = text.replace(/\D/g, '');
+      if (digits.length >= 7) {
+        // Got enough digits — send to n8n normally; AI will read back for confirmation
+        console.log(`Phone spoken OK (${digits.length} digits) — sending to n8n normally`);
+        phoneCollectionPending.delete(callSid);
+        phoneCollectionActive.add(callSid);
+      } else {
+        // Couldn't capture digits — apologise and switch to keypad
+        console.log(`Phone not captured (only ${digits.length} digits) — switching to DTMF`);
+        phoneCollectionPending.delete(callSid);
+        phoneCollectionActive.add(callSid);
+        dtmfSessions.add(callSid);
+        const lang = lockedLanguage || 'English';
+        const voice = pollyVoiceMap[lang] || 'Polly.Ruth-Neural';
+        const apology = phoneApologyMessages[lang] || phoneApologyMessages['English'];
+        const safeApology = apology.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&apos;');
+        const dtmfTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${voice}">${safeApology}</Say>
+  <Gather input="dtmf" numDigits="10" action="https://${SERVER_URL}/phone-dtmf-received" method="POST" timeout="30"></Gather>
+  <Say voice="${voice}">I didn&apos;t receive your number. Please call back and try again.</Say>
+</Response>`;
+        setSpeakingLock(apology);
+        await updateTwilioCall(callSid, dtmfTwiml);
+        return;
+      }
+    }
+
     await sendToN8n(text, callSid, streamSid, lockedLanguage || 'English');
   }
 
@@ -468,34 +526,17 @@ wss.on('connection', (twilioWs, req) => {
       const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : twimlResponse;
 
       // Once phone is confirmed (AI asks for address), clear phone collection state
-      if (phoneCollectionActive.has(cSid) && isPhoneConfirmed(sayText)) {
-        console.log(`Phone confirmed — exiting DTMF mode for ${cSid}`);
+      if ((phoneCollectionActive.has(cSid) || phoneCollectionPending.has(cSid)) && isPhoneConfirmed(sayText)) {
+        console.log(`Phone confirmed — clearing phone collection state for ${cSid}`);
         phoneCollectionActive.delete(cSid);
+        phoneCollectionPending.delete(cSid);
       }
 
-      // If AI is asking for phone number (first ask OR re-ask after "No") → DTMF keypad
-      const isDTMFNeeded = isPhoneNumberRequest(sayText) ||
-        (phoneCollectionActive.has(cSid) && /\bnumber\b/i.test(sayText));
-      if (isDTMFNeeded) {
-        console.log(`Phone number request detected — switching to DTMF for ${cSid}`);
-        phoneCollectionActive.add(cSid);
-        dtmfSessions.add(cSid);
-
-        const voice = pollyVoiceMap[language] || 'Polly.Ruth-Neural';
-        // Inject DTMF gather into the existing n8n TwiML — avoids double-encoding HTML entities.
-        // Strip keep-alive <Pause length="600"/> (not needed during DTMF gather),
-        // append keypad instruction to the Say text, then add Gather + fallback.
-        const dtmfTwiml = twimlResponse
-          .replace(/<Pause length="600"[^>]*\/>/gi, '')
-          .replace(/<\/Say>/i, ' Please type it on your keypad.</Say>')
-          .replace(/<\/Response>/i,
-            `<Gather input="dtmf" numDigits="10" action="https://${SERVER_URL}/phone-dtmf-received" method="POST" timeout="30"></Gather>` +
-            `<Say voice="${voice}">I didn&apos;t receive your number. Please call back and try again.</Say>` +
-            `</Response>`
-          );
-        setSpeakingLock(sayText + ' Please type it on your keypad.');
-        if (cSid) await updateTwilioCall(cSid, dtmfTwiml);
-        return;
+      // If AI is asking for phone number → mark pending and let customer speak first.
+      // Only fall back to DTMF keypad if their spoken digits can't be captured (handled in processTranscript).
+      if (isPhoneNumberRequest(sayText) && !phoneCollectionActive.has(cSid) && !phoneCollectionPending.has(cSid)) {
+        console.log(`Phone number request detected — listening for spoken digits first (${cSid})`);
+        phoneCollectionPending.add(cSid);
       }
 
       setSpeakingLock(sayText);
@@ -535,6 +576,7 @@ wss.on('connection', (twilioWs, req) => {
           sessionLanguages.delete(sessionId);
           dtmfSessions.delete(sessionId);
           phoneCollectionActive.delete(sessionId);
+          phoneCollectionPending.delete(sessionId);
           break;
       }
     } catch (err) {
@@ -553,6 +595,7 @@ wss.on('connection', (twilioWs, req) => {
       sessionLanguages.delete(sessionId);
       dtmfSessions.delete(sessionId);
       phoneCollectionActive.delete(sessionId);
+      phoneCollectionPending.delete(sessionId);
     }
   });
 
