@@ -565,6 +565,8 @@ wss.on('connection', (twilioWs, req) => {
       if (cSid) await updateTwilioCall(cSid, twimlResponse);
     } catch (err) {
       console.error('Error sending to n8n:', err);
+      isSpeaking = false; // Prevent permanent silence on network error/timeout
+      pendingForwardUtterance = null; // Don't forward stale utterance after failure
     }
   }
 
