@@ -342,17 +342,9 @@ wss.on('connection', (twilioWs, req) => {
     clearTimeout(speakingTimer);
     const duration = estimateTTSDuration(responseText);
     console.log(`TTS lock set for ${duration}ms`);
-    speakingTimer = setTimeout(async () => {
+    speakingTimer = setTimeout(() => {
       isSpeaking = false;
       console.log('TTS lock cleared — listening for caller');
-      // Forward the utterance that triggered language detection, if any.
-      // Avoids caller having to repeat themselves after the greeting plays.
-      if (pendingForwardUtterance && !destroyed) {
-        const fwd = pendingForwardUtterance;
-        pendingForwardUtterance = null;
-        console.log(`Forwarding post-switch utterance to ${lockedLanguage} agent: "${fwd}"`);
-        await sendToN8n(fwd, callSid, streamSid, lockedLanguage || 'English');
-      }
     }, duration);
   }
 
@@ -410,19 +402,21 @@ wss.on('connection', (twilioWs, req) => {
           lockedLanguage = detected;
           languageConfirmed = true;
           sessionLanguages.set(callSid, detected);
-          // If the triggering utterance has real content (≥3 words), save it to forward
-          // to the AI after the greeting plays — so caller doesn't have to repeat themselves.
-          if (text && text.trim().split(/\s+/).length >= 3) {
-            pendingForwardUtterance = text.trim();
-            console.log(`Saving post-switch utterance: "${pendingForwardUtterance}"`);
-          }
           isSpeaking = true; // Block transcripts immediately — prevents race with LANGUAGE_SWITCHED n8n call
           switching = true;
           deepgramReady = false;
           try { dgLive.finish(); } catch(e) {}
           deepgramLive = createDGLive(deepgramClient, detected);
           attachDGHandlers(deepgramLive, detected);
-          await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
+          // If the triggering utterance has real content (≥3 words), combine it with
+          // LANGUAGE_SWITCHED so the AI greets AND processes it in a single response —
+          // no timer-based forwarding, no race conditions.
+          const triggerWords = text ? text.trim().split(/\s+/).length : 0;
+          const langSwitchedMsg = triggerWords >= 3
+            ? `LANGUAGE_SWITCHED: ${text.trim()}`
+            : 'LANGUAGE_SWITCHED';
+          console.log(`Sending to n8n: "${langSwitchedMsg}"`);
+          await sendToN8n(langSwitchedMsg, callSid, streamSid, detected);
         } else if (detected === 'English' && data.is_final && text.trim().split(/\s+/).length >= 3) {
           // Deepgram explicitly detected English with enough words
           englishUtteranceCount++;
