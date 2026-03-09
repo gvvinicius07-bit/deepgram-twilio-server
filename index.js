@@ -317,6 +317,8 @@ wss.on('connection', (twilioWs, req) => {
   let switching = false;
   let failedDetectionCount = 0;
   let destroyed = false;
+  // Utterance that triggered language detection — forwarded to AI after greeting TTS clears
+  let pendingForwardUtterance = null;
 
   // Block TTS bleedthrough for greeting when language was preselected via keypad
   if (preselectedLanguage) {
@@ -340,9 +342,17 @@ wss.on('connection', (twilioWs, req) => {
     clearTimeout(speakingTimer);
     const duration = estimateTTSDuration(responseText);
     console.log(`TTS lock set for ${duration}ms`);
-    speakingTimer = setTimeout(() => {
+    speakingTimer = setTimeout(async () => {
       isSpeaking = false;
       console.log('TTS lock cleared — listening for caller');
+      // Forward the utterance that triggered language detection, if any.
+      // Avoids caller having to repeat themselves after the greeting plays.
+      if (pendingForwardUtterance && !destroyed) {
+        const fwd = pendingForwardUtterance;
+        pendingForwardUtterance = null;
+        console.log(`Forwarding post-switch utterance to ${lockedLanguage} agent: "${fwd}"`);
+        await sendToN8n(fwd, callSid, streamSid, lockedLanguage || 'English');
+      }
     }, duration);
   }
 
@@ -400,6 +410,12 @@ wss.on('connection', (twilioWs, req) => {
           lockedLanguage = detected;
           languageConfirmed = true;
           sessionLanguages.set(callSid, detected);
+          // If the triggering utterance has real content (≥3 words), save it to forward
+          // to the AI after the greeting plays — so caller doesn't have to repeat themselves.
+          if (text && text.trim().split(/\s+/).length >= 3) {
+            pendingForwardUtterance = text.trim();
+            console.log(`Saving post-switch utterance: "${pendingForwardUtterance}"`);
+          }
           isSpeaking = true; // Block transcripts immediately — prevents race with LANGUAGE_SWITCHED n8n call
           switching = true;
           deepgramReady = false;
@@ -522,6 +538,7 @@ wss.on('connection', (twilioWs, req) => {
       });
       if (!response.ok) {
         console.error(`n8n returned ${response.status}: ${await response.text()}`);
+        isSpeaking = false; // Ensure caller can still speak if n8n fails
         return;
       }
       const twimlResponse = await response.text();
