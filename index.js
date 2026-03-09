@@ -400,6 +400,7 @@ wss.on('connection', (twilioWs, req) => {
           lockedLanguage = detected;
           languageConfirmed = true;
           sessionLanguages.set(callSid, detected);
+          isSpeaking = true; // Block transcripts immediately — prevents race with LANGUAGE_SWITCHED n8n call
           switching = true;
           deepgramReady = false;
           try { dgLive.finish(); } catch(e) {}
@@ -458,11 +459,11 @@ wss.on('connection', (twilioWs, req) => {
   }
 
   const phoneApologyMessages = {
-    'English':    "I'm sorry, I didn't understand that perfectly. Could you type it on the keypad just to be 100% sure?",
-    'Portuguese': "Desculpe, não entendi direito. Pode digitar no teclado para ter certeza?",
-    'Spanish':    "Lo siento, no entendí bien. ¿Podría escribir su número en el teclado?",
-    'Mandarin':   "对不起，我没听清楚。您能在键盘上输入您的电话号码吗？",
-    'Arabic':     "آسف، لم أفهم ذلك جيداً. هل يمكنك كتابة رقمك على لوحة المفاتيح؟"
+    'English':    "Please type your 10-digit phone number on the keypad.",
+    'Portuguese': "Por favor, digite seu número de 10 dígitos no teclado.",
+    'Spanish':    "Por favor, escribe tus 10 dígitos en el teclado.",
+    'Mandarin':   "请用键盘输入您的10位号码。",
+    'Arabic':     "يرجى إدخال رقمك المكون من 10 أرقام على لوحة المفاتيح."
   };
 
   async function processTranscript(text) {
@@ -471,15 +472,19 @@ wss.on('connection', (twilioWs, req) => {
 
     // If we're waiting for the customer to speak their phone number, check digits first
     if (phoneCollectionPending.has(callSid)) {
-      const digits = text.replace(/\D/g, '');
-      if (digits.length >= 7) {
-        // Got enough digits — send to n8n normally; AI will read back for confirmation
-        console.log(`Phone spoken OK (${digits.length} digits) — sending to n8n normally`);
+      const rawDigits = (text.match(/\d/g) || []).length;
+      // Also count spoken digit words (all 5 languages)
+      const digitWordPattern = /\b(zero|one|two|three|four|five|six|seven|eight|nine|oh|um|uma|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|cero|uno|una|siete|ocho|nueve)\b/gi;
+      const wordDigits = (text.match(digitWordPattern) || []).length;
+      const totalDigits = rawDigits + wordDigits;
+      if (totalDigits >= 7) {
+        // Got enough digits (spoken or numeric) — send to n8n; AI reads back for confirmation
+        console.log(`Phone spoken OK (${rawDigits} raw + ${wordDigits} word = ${totalDigits} digits) — sending to n8n normally`);
         phoneCollectionPending.delete(callSid);
         phoneCollectionActive.add(callSid);
       } else {
-        // Couldn't capture digits — apologise and switch to keypad
-        console.log(`Phone not captured (only ${digits.length} digits) — switching to DTMF`);
+        // Couldn't capture digits — switch to keypad
+        console.log(`Phone not captured (${totalDigits} digits total) — switching to DTMF`);
         phoneCollectionPending.delete(callSid);
         phoneCollectionActive.add(callSid);
         dtmfSessions.add(callSid);
