@@ -146,7 +146,7 @@ app.post('/incoming-call', async (req, res) => {
   const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Ruth-Neural"><prosody volume="+6dB">${safeGreeting}</prosody></Say>
+  <Say voice="Polly.Ruth-Neural">${safeGreeting}</Say>
   <Start><Stream url="${wsUrl}" track="inbound_track" /></Start>
   <Pause length="600"/>
 </Response>`;
@@ -159,7 +159,7 @@ app.post('/language-menu', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather numDigits="1" action="https://${SERVER_URL}/language-pick" method="POST" timeout="10">
-    <Say voice="Polly.Ruth-Neural"><prosody volume="+6dB">It seems like you may be having trouble. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</prosody></Say>
+    <Say voice="Polly.Ruth-Neural">It seems like you may be having trouble. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</Say>
   </Gather>
   <Redirect method="POST">https://${SERVER_URL}/language-menu</Redirect>
 </Response>`;
@@ -201,7 +201,7 @@ app.post('/language-pick', async (req, res) => {
   const wsUrl = `wss://${SERVER_URL}/stream/${callSid}/${language}`;
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${voice}"><prosody volume="+6dB">${safeGreeting}</prosody></Say>
+  <Say voice="${voice}">${safeGreeting}</Say>
   <Start><Stream url="${wsUrl}" track="inbound_track" /></Start>
   <Pause length="600"/>
 </Response>`;
@@ -371,7 +371,7 @@ wss.on('connection', (twilioWs, req) => {
         const bye = { 'English': "We didn't hear from you. Feel free to call back anytime. Goodbye!", 'Portuguese': "Não ouvi resposta. Pode ligar de volta quando quiser. Até logo!", 'Spanish': "No recibimos respuesta. Puede llamar de nuevo cuando quiera. ¡Hasta luego!", 'Mandarin': "我们没有收到您的回复。欢迎随时再次致电。再见！", 'Arabic': "لم نسمع منك. يمكنك الاتصال مرة أخرى في أي وقت. وداعاً!" };
         const msg = bye[lang] || bye['English'];
         const safe = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        await updateTwilioCall(callSid, `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}"><prosody volume="+6dB">${safe}</prosody></Say><Hangup/></Response>`);
+        await updateTwilioCall(callSid, `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}">${safe}</Say><Hangup/></Response>`);
         return;
       }
       const lang = lockedLanguage || 'English';
@@ -380,7 +380,7 @@ wss.on('connection', (twilioWs, req) => {
       const safe = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       console.log(`No input timeout #${noInputCount} — re-prompting in ${lang}`);
       setSpeakingLock(msg);
-      await updateTwilioCall(callSid, `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}"><prosody volume="+6dB">${safe}</prosody></Say><Pause length="600"/></Response>`);
+      await updateTwilioCall(callSid, `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}">${safe}</Say><Pause length="600"/></Response>`);
     }, 10000);
   }
 
