@@ -319,6 +319,8 @@ wss.on('connection', (twilioWs, req) => {
   let destroyed = false;
   // Utterance that triggered language detection — forwarded to AI after greeting TTS clears
   let pendingForwardUtterance = null;
+  // Transcript spoken while TTS lock was active — processed immediately after lock expires
+  let bufferedTranscript = null;
 
   // Block TTS bleedthrough for greeting when language was preselected via keypad
   if (preselectedLanguage) {
@@ -339,12 +341,28 @@ wss.on('connection', (twilioWs, req) => {
 
   function setSpeakingLock(responseText) {
     isSpeaking = true;
+    bufferedTranscript = null; // Clear stale buffer on every new TTS
     clearTimeout(speakingTimer);
     const duration = estimateTTSDuration(responseText);
     console.log(`TTS lock set for ${duration}ms`);
     speakingTimer = setTimeout(() => {
       isSpeaking = false;
       console.log('TTS lock cleared — listening for caller');
+      // If caller spoke while AI was speaking, process it now
+      if (bufferedTranscript && !destroyed && languageConfirmed) {
+        const saved = bufferedTranscript;
+        bufferedTranscript = null;
+        console.log(`Processing buffered transcript after TTS lock: "${saved}"`);
+        transcript += ' ' + saved;
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(async () => {
+          if (destroyed) return;
+          const full = transcript.trim();
+          transcript = '';
+          if (!full || full.length < 3) return;
+          await processTranscript(full);
+        }, 1000);
+      }
     }, duration);
   }
 
@@ -371,7 +389,11 @@ wss.on('connection', (twilioWs, req) => {
       }
 
       if (isSpeaking) {
-        console.log(`Ignored transcript during TTS playback: "${text}"`);
+        // Buffer final transcripts so they're processed when the TTS lock expires
+        if (data.is_final && text.trim().length >= 2) {
+          bufferedTranscript = bufferedTranscript ? bufferedTranscript + ' ' + text : text;
+          console.log(`Buffered transcript during TTS lock: "${text}"`);
+        }
         return;
       }
 
