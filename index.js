@@ -245,9 +245,6 @@ app.post('/phone-dtmf-received', async (req, res) => {
     // competed to set the call's current TwiML and the <Pause> often won, leaving
     // the call silent after keypad entry. Returning the TwiML directly is cleaner:
     // Twilio uses it as the next instruction and the WebSocket stream stays active.
-    const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
-    const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : '';
-    if (sayText) setSpeakingLock(sayText);
     res.type('text/xml').send(twimlResponse);
   } catch (err) {
     console.error('Error processing DTMF phone:', err);
