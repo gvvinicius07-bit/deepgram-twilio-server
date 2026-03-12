@@ -271,7 +271,7 @@ function createDGLive(client, language) {
     language: dgLang,
     punctuate: true,
     interim_results: true,
-    endpointing: 2000,
+    endpointing: 1200,
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1
@@ -475,13 +475,16 @@ wss.on('connection', (twilioWs, req) => {
       if (data.is_final) {
         transcript += ' ' + text;
         clearTimeout(silenceTimer);
+        // 3000ms only during phone collection (prevents digit strings splitting mid-number)
+        // 1000ms for all other turns — reduces dead air after short answers like names
+        const silenceDelay = (phoneCollectionPending.has(callSid) || phoneCollectionActive.has(callSid)) ? 3000 : 1000;
         silenceTimer = setTimeout(async () => {
           if (destroyed) return;
           const full = transcript.trim();
           transcript = '';
           if (!full || full.length < 3) return;
           await processTranscript(full);
-        }, 3000); // 3s gives callers time to continue digit strings without splitting
+        }, silenceDelay);
       }
     });
 
