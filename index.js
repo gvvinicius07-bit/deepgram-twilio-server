@@ -534,14 +534,14 @@ wss.on('connection', (twilioWs, req) => {
             console.log('Language confirmed: English (explicit Deepgram detection)');
           }
           await processTranscript(text);
-        } else if (data.is_final && text.trim().split(/\s+/).length >= 10) {
+        } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
           // Fallback: no detected_language from Deepgram, text looks like English.
-          // Require 10+ words before locking — short garbage transcriptions of Portuguese
-          // (e.g. "What's the follow-up for today?" = 7 words) won't trigger this.
-          // Real English callers hit the explicit branch above via detected_language:en.
+          // Require 2 consecutive ambiguous utterances before locking English — one garbage
+          // transcription of Portuguese won't permanently route caller to English.
+          // processTranscript is still called so caller gets a response on the 1st try.
           englishUtteranceCount++;
           failedDetectionCount++;
-          if (englishUtteranceCount >= 1) {
+          if (englishUtteranceCount >= 2) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             sessionLanguages.set(callSid, 'English');
