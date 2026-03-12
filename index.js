@@ -238,14 +238,17 @@ app.post('/phone-dtmf-received', async (req, res) => {
       return;
     }
     const twimlResponse = await n8nResponse.text();
-    console.log('n8n DTMF response received, updating call');
+    console.log('n8n DTMF response received, returning as Gather action response');
 
-    // Update the live call with n8n's TwiML (AI reads back the number for confirmation)
-    await updateTwilioCall(callSid, twimlResponse);
-
-    // Return a brief pause — gives updateTwilioCall time to register before Twilio
-    // would otherwise hang up on the empty action response.
-    res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Pause length="5"/></Response>');
+    // Return n8n TwiML directly as the Gather action response.
+    // Previously we called updateTwilioCall() + returned a <Pause>, but those two
+    // competed to set the call's current TwiML and the <Pause> often won, leaving
+    // the call silent after keypad entry. Returning the TwiML directly is cleaner:
+    // Twilio uses it as the next instruction and the WebSocket stream stays active.
+    const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
+    const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : '';
+    if (sayText) setSpeakingLock(sayText);
+    res.type('text/xml').send(twimlResponse);
   } catch (err) {
     console.error('Error processing DTMF phone:', err);
     res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry, there was a problem. Please try again.</Say></Response>');
@@ -503,9 +506,9 @@ wss.on('connection', (twilioWs, req) => {
       if (data.is_final) {
         transcript += ' ' + text;
         clearTimeout(silenceTimer);
-        // 3000ms only during phone collection (prevents digit strings splitting mid-number)
-        // 1000ms for all other turns — reduces dead air after short answers like names
-        const silenceDelay = (phoneCollectionPending.has(callSid) || phoneCollectionActive.has(callSid)) ? 3000 : 1000;
+        // 3000ms during phone collection (prevents digit strings splitting mid-number)
+        // 1800ms for all other turns — long enough for "John... Parker" style pauses
+        const silenceDelay = (phoneCollectionPending.has(callSid) || phoneCollectionActive.has(callSid)) ? 3000 : 1800;
         silenceTimer = setTimeout(async () => {
           if (destroyed) return;
           const full = transcript.trim();
