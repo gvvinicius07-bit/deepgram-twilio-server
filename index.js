@@ -549,12 +549,13 @@ wss.on('connection', (twilioWs, req) => {
             console.log('Language confirmed: English (explicit Deepgram detection)');
           }
           await processTranscript(text);
-        } else if (data.is_final && text.trim().split(/\s+/).length >= 6) {
-          // Only confirm English fallback on longer utterances (6+ words) to avoid
-          // locking in English when Deepgram mistranscribes Portuguese as short English phrases.
+        } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
+          // English fallback: Deepgram returned no detected_language but transcript looks English.
+          // Require 2 consecutive English-looking utterances before locking in, so one garbage
+          // mistranscription of Portuguese doesn't permanently lock the caller into English.
           englishUtteranceCount++;
           failedDetectionCount++;
-          if (englishUtteranceCount >= 1) {
+          if (englishUtteranceCount >= 2) {
             clearTimeout(detectionTimeout);
             lockedLanguage = 'English';
             languageConfirmed = true;
