@@ -275,7 +275,9 @@ function detectLanguageFromText(text) {
   if (PT_SINGLE_WORD.test(singleWord)) return 'Portuguese';
 
   // Multi-word Portuguese detection (accent-normalized)
-  const ptOnly = /\b(oi|ola|voce|obrigado|obrigada|nao|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|entao|tambem|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|marcar|pintura|pintar|sala|quarto|corredor|porta|janela|teto|piso|cor|branco|cinza|azul|verde|cores|orcamento|preco|valor|agenda|agendar|ligar|atender|servico|servicos|casa|apartamento|imovel|reforma|renovacao|interior|exterior|portugues|queria|precisa|preciso|posso|pode|vou|falo|falamos|falando|falar|estou|esta|estao|somos|sou|sera|seria|mesmo|mesmo|tambem|tambem|tudo|tudo|bom|boa|dia|tarde|noite|obrigado|obrigada|tchau|ate|logo|por|favor|desculpe|desculpa|nao|sim|claro|certo|ok|hum|ah)\b/;
+  // NOTE: removed "interior","exterior","logo","ok","ah" — they are common English words
+  // and caused false Portuguese detection (e.g. "interior painting" → switched to PT agent)
+  const ptOnly = /\b(oi|ola|voce|obrigado|obrigada|nao|gostaria|preciso|parede|tinta|banheiro|cozinha|brasil|brazil|entao|tambem|tudo|muito|devagar|depois|aqui|isso|esse|minha|meu|nossa|nosso|falo|fala|gosto|tenho|vou|vai|pode|fazer|quero|queria|seria|posso|falar|ajuda|obra|hoje|onde|qual|quanto|sim|marcar|pintura|pintar|sala|quarto|corredor|porta|janela|teto|piso|cor|branco|cinza|azul|verde|cores|orcamento|preco|valor|agenda|agendar|ligar|atender|servico|servicos|casa|apartamento|imovel|reforma|renovacao|portugues|queria|precisa|preciso|posso|pode|vou|falo|falamos|falando|falar|estou|esta|estao|somos|sou|sera|seria|mesmo|tambem|tudo|bom|boa|dia|tarde|noite|tchau|ate|por|favor|desculpe|desculpa|claro|certo|hum)\b/;
   if (ptOnly.test(tn)) return 'Portuguese';
 
   const esOnly = /\b(hola|gracias|buenos|dias|hoy|aqui|hasta|entonces|donde|espanol|mexico|colombia|argentina|tambien|ahora|despues|siempre|nunca|mucho|pequeno|despacio|cocina|bano|quieres|tiene|tengo|necesito|puedo|hablar|ayuda|pintura|quiero|pared)\b/;
@@ -383,7 +385,7 @@ wss.on('connection', (twilioWs, req) => {
           if (destroyed) return;
           const full = transcript.trim();
           transcript = '';
-          if (!full || full.length < 3) return;
+          if (!full || full.length < 2) return;
           await processTranscript(full);
         }, 1000);
       }
@@ -474,10 +476,12 @@ wss.on('connection', (twilioWs, req) => {
           }
           await processTranscript(text);
         } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
-          // Ambiguous with enough words - increment counters
+          // Ambiguous with enough words - confirm English immediately since we're engaging n8n
+          // (Waiting for a 2nd utterance caused the caller's name to be silently dropped:
+          //  languageConfirmed stayed false, so the buffered reply was thrown away.)
           englishUtteranceCount++;
           failedDetectionCount++;
-          if (englishUtteranceCount >= 2) {
+          if (englishUtteranceCount >= 1) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             sessionLanguages.set(callSid, 'English');
@@ -506,7 +510,7 @@ wss.on('connection', (twilioWs, req) => {
           if (destroyed) return;
           const full = transcript.trim();
           transcript = '';
-          if (!full || full.length < 3) return;
+          if (!full || full.length < 2) return;
           await processTranscript(full);
         }, silenceDelay);
       }
