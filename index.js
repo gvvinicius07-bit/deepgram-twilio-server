@@ -291,8 +291,7 @@ function detectLanguageFromText(text) {
 
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
-  // NOTE: no detect_language param — language: 'multi' is itself the detection mode
-  return client.listen.live({
+  const config = {
     model: 'nova-2-general',
     language: dgLang,
     punctuate: true,
@@ -303,7 +302,11 @@ function createDGLive(client, language) {
     channels: 1,
     utterance_end_ms: 1500,
     vad_events: true
-  });
+  };
+  // In multi mode, also request detect_language so the detected_language field
+  // is populated even when the transcription text is garbage (common for non-English).
+  if (dgLang === 'multi') config.detect_language = true;
+  return client.listen.live(config);
 }
 
 function estimateTTSDuration(text) {
@@ -550,8 +553,9 @@ wss.on('connection', (twilioWs, req) => {
             console.log('Language confirmed: English (explicit Deepgram detection)');
           }
           await processTranscript(text);
-        } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
-          // Ambiguous with enough words - confirm English immediately since we're engaging n8n
+        } else if (data.is_final && text.trim().split(/\s+/).length >= 6) {
+          // Only confirm English fallback on longer utterances (6+ words) to avoid
+          // locking in English when Deepgram mistranscribes Portuguese as short English phrases.
           englishUtteranceCount++;
           failedDetectionCount++;
           if (englishUtteranceCount >= 1) {
