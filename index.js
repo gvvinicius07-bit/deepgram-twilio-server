@@ -291,6 +291,7 @@ function detectLanguageFromText(text) {
 
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
+  // NOTE: no detect_language param — language: 'multi' is itself the detection mode
   return client.listen.live({
     model: 'nova-2-general',
     language: dgLang,
@@ -384,17 +385,6 @@ wss.on('connection', (twilioWs, req) => {
     }, 10000);
   }
 
-  // Language detection timeout: if no transcript arrives within 12s, send the language menu
-  // so the caller isn't left in silence while Deepgram struggles to detect their language.
-  let detectionTimeoutFired = false;
-  const detectionTimeout = setTimeout(async () => {
-    if (destroyed || languageConfirmed || detectionTimeoutFired) return;
-    detectionTimeoutFired = true;
-    console.log(`Detection timeout — no transcript in 12s, redirecting to language menu (${callSid})`);
-    const menuTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Redirect method="POST">https://${SERVER_URL}/language-menu</Redirect></Response>`;
-    await updateTwilioCall(callSid, menuTwiml);
-  }, 12000);
-
   // Block TTS bleedthrough for greeting when language was preselected via keypad
   if (preselectedLanguage) {
     console.log(`Initial TTS lock 5000ms for preselected language greeting`);
@@ -416,7 +406,6 @@ wss.on('connection', (twilioWs, req) => {
     clearTimeout(silenceTimer);
     clearTimeout(speakingTimer);
     clearTimeout(noInputTimer);
-    clearTimeout(detectionTimeout);
     clearInterval(dgKeepAliveInterval);
     try { deepgramLive?.finish(); } catch(e) {}
     activeSessions.delete(sessionId);
@@ -470,8 +459,6 @@ wss.on('connection', (twilioWs, req) => {
     dgLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
       if (destroyed) return;
       const text = data.channel?.alternatives?.[0]?.transcript;
-      // Log ALL events so we can diagnose silence issues
-      if (data.is_final) console.log(`DG final: "${text || ''}" | lang: ${data.channel?.detected_language || '?'} conf: ${data.channel?.language_confidence ?? '?'}`);
       if (!text || switching) return;
 
       // Don't process voice while caller is entering digits on keypad
@@ -518,7 +505,6 @@ wss.on('connection', (twilioWs, req) => {
 
         // Switch to non-English if Deepgram detected it, OR text matched on 2+ words
         if (detected && detected !== 'English') {
-          clearTimeout(detectionTimeout);
           console.log(`Non-English confirmed: ${detected}, switching Deepgram`);
           lockedLanguage = detected;
           languageConfirmed = true;
@@ -542,7 +528,6 @@ wss.on('connection', (twilioWs, req) => {
           // Deepgram explicitly detected English with enough words
           englishUtteranceCount++;
           if (englishUtteranceCount >= 1) {
-            clearTimeout(detectionTimeout);
             lockedLanguage = 'English';
             languageConfirmed = true;
             sessionLanguages.set(callSid, 'English');
@@ -550,13 +535,12 @@ wss.on('connection', (twilioWs, req) => {
           }
           await processTranscript(text);
         } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
-          // English fallback: Deepgram returned no detected_language but transcript looks English.
-          // Require 2 consecutive English-looking utterances before locking in, so one garbage
-          // mistranscription of Portuguese doesn't permanently lock the caller into English.
+          // Ambiguous with enough words - confirm English immediately since we're engaging n8n
+          // (Waiting for a 2nd utterance caused the caller's name to be silently dropped:
+          //  languageConfirmed stayed false, so the buffered reply was thrown away.)
           englishUtteranceCount++;
           failedDetectionCount++;
-          if (englishUtteranceCount >= 2) {
-            clearTimeout(detectionTimeout);
+          if (englishUtteranceCount >= 1) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             sessionLanguages.set(callSid, 'English');
