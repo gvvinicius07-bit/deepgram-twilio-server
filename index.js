@@ -484,9 +484,10 @@ wss.on('connection', (twilioWs, req) => {
 
       if (!languageConfirmed) {
         // Try Deepgram's detected_language first, fall back to text regex
-        const dgDetected = data.channel?.detected_language;
-        const dgConfidence = data.channel?.language_confidence ?? 0;
-        let detected = (dgDetected && dgConfidence >= 0.85) ? deepgramLangMap[dgDetected] : null;
+        // In streaming mode, detected language is in alternatives[0].languages[0]
+        // (data.channel.detected_language does NOT exist in streaming — pre-recorded only)
+        const dgDetected = data.channel?.alternatives?.[0]?.languages?.[0];
+        let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
 
         const wordCount = text.trim().split(/\s+/).length;
 
