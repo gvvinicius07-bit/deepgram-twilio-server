@@ -94,7 +94,7 @@ const PHONE_REQUEST_PATTERNS = [
 const PHONE_CONFIRMED_PATTERNS = [
   /address/i,
   /endere[çc]o/i,
-  /dirección/i,
+  /dirección|domicilio|ubicación/i,
   /地址/,
   /العنوان/
 ];
@@ -147,7 +147,7 @@ app.post('/incoming-call', async (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Ruth-Neural">${safeGreeting}</Say>
-  <Start><Stream url="${wsUrl}" /></Start>
+  <Start><Stream url="${wsUrl}" track="inbound_track" /></Start>
   <Pause length="600"/>
 </Response>`;
   res.type('text/xml').send(twiml);
@@ -202,7 +202,7 @@ app.post('/language-pick', async (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="${voice}">${safeGreeting}</Say>
-  <Start><Stream url="${wsUrl}" /></Start>
+  <Start><Stream url="${wsUrl}" track="inbound_track" /></Start>
   <Pause length="600"/>
 </Response>`;
   res.type('text/xml').send(twiml);
@@ -217,8 +217,8 @@ app.post('/phone-dtmf-received', async (req, res) => {
   console.log(`DTMF phone received: "${digits}" for ${callSid} (${language})`);
 
   // Remove from active DTMF entry — WebSocket transcripts can resume
-  // (phoneCollectionActive stays set until address question confirms phone was accepted)
   dtmfSessions.delete(callSid);
+  phoneCollectionActive.delete(callSid); // clear so phone state doesn't leak if n8n fails
 
   // Send digits to n8n as if the caller spoke them
   try {
@@ -297,10 +297,12 @@ function createDGLive(client, language) {
     language: dgLang,
     punctuate: true,
     interim_results: true,
-    endpointing: 1200,
+    endpointing: 300,
     encoding: 'mulaw',
     sample_rate: 8000,
-    channels: 1
+    channels: 1,
+    utterance_end_ms: 1500,
+    vad_events: true
   });
 }
 
@@ -316,10 +318,10 @@ wss.on('connection', (twilioWs, req) => {
   const preselectedLanguage = urlParts?.[1] || null;
   console.log(`New call session: ${sessionId}${preselectedLanguage ? ' | Preselected: ' + preselectedLanguage : ''}`);
 
-  // Keepalive: prevent Railway proxy from dropping idle WebSocket connections
+  // Keepalive: prevent Railway proxy from dropping idle WebSocket connections (20s < Railway's ~60s timeout)
   const keepaliveInterval = setInterval(() => {
     if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
-  }, 30000);
+  }, 20000);
 
   // Kill any existing session for this CallSid
   if (activeSessions.has(sessionId)) {
@@ -343,8 +345,6 @@ wss.on('connection', (twilioWs, req) => {
   let switching = false;
   let failedDetectionCount = 0;
   let destroyed = false;
-  // Utterance that triggered language detection — forwarded to AI after greeting TTS clears
-  let pendingForwardUtterance = null;
   // Transcript spoken while TTS lock was active — processed immediately after lock expires
   let bufferedTranscript = null;
 
@@ -357,12 +357,24 @@ wss.on('connection', (twilioWs, req) => {
     }, 5000);
   }
 
+  // Deepgram KeepAlive: Deepgram drops connections after ~12s of no audio (e.g. during TTS playback)
+  const dgKeepAliveInterval = setInterval(() => {
+    if (deepgramLive?.getReadyState() === 1) {
+      try { deepgramLive.keepAlive(); } catch(e) {}
+    }
+  }, 8000);
+
   activeSessions.set(sessionId, () => {
     destroyed = true;
     clearTimeout(silenceTimer);
     clearTimeout(speakingTimer);
+    clearInterval(dgKeepAliveInterval);
     try { deepgramLive?.finish(); } catch(e) {}
     activeSessions.delete(sessionId);
+    dtmfSessions.delete(sessionId);
+    phoneCollectionActive.delete(sessionId);
+    phoneCollectionPending.delete(sessionId);
+    sessionLanguages.delete(sessionId);
   });
 
   function setSpeakingLock(responseText) {
@@ -426,7 +438,7 @@ wss.on('connection', (twilioWs, req) => {
       if (!languageConfirmed) {
         // Try Deepgram's detected_language first, fall back to text regex
         const dgDetected = data.channel?.detected_language;
-        const dgConfidence = data.channel?.language_confidence ?? 1;
+        const dgConfidence = data.channel?.language_confidence ?? 0;
         let detected = (dgDetected && dgConfidence >= 0.85) ? deepgramLangMap[dgDetected] : null;
 
         const wordCount = text.trim().split(/\s+/).length;
@@ -537,7 +549,7 @@ wss.on('connection', (twilioWs, req) => {
     if (phoneCollectionPending.has(callSid)) {
       const rawDigits = (text.match(/\d/g) || []).length;
       // Also count spoken digit words (all 5 languages)
-      const digitWordPattern = /\b(zero|one|two|three|four|five|six|seven|eight|nine|oh|um|uma|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|cero|uno|una|siete|ocho|nueve)\b/gi;
+      const digitWordPattern = /\b(zero|one|two|three|four|five|six|seven|eight|nine|oh|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|cero|uno|una|dos|tres|cuatro|siete|ocho|nueve|diez)\b/gi;
       const wordDigits = (text.match(digitWordPattern) || []).length;
       const totalDigits = rawDigits + wordDigits;
       if (totalDigits >= 7) {
@@ -609,11 +621,13 @@ wss.on('connection', (twilioWs, req) => {
       }
 
       setSpeakingLock(sayText);
-      if (cSid) await updateTwilioCall(cSid, twimlResponse);
+      if (cSid) {
+        const ok = await updateTwilioCall(cSid, twimlResponse);
+        if (!ok) isSpeaking = false; // Unblock caller input if Twilio update failed
+      }
     } catch (err) {
       console.error('Error sending to n8n:', err);
       isSpeaking = false; // Prevent permanent silence on network error/timeout
-      pendingForwardUtterance = null; // Don't forward stale utterance after failure
     }
   }
 
@@ -642,6 +656,7 @@ wss.on('connection', (twilioWs, req) => {
         case 'stop':
           console.log('Stream stopped');
           clearInterval(keepaliveInterval);
+          clearInterval(dgKeepAliveInterval);
           try { deepgramLive?.finish(); } catch(e) {}
           activeSessions.delete(sessionId);
           sessionLanguages.delete(sessionId);
@@ -657,6 +672,7 @@ wss.on('connection', (twilioWs, req) => {
 
   twilioWs.on('close', () => {
     clearInterval(keepaliveInterval);
+    clearInterval(dgKeepAliveInterval);
     if (!destroyed) {
       console.log('Twilio disconnected');
       clearTimeout(silenceTimer);
@@ -694,14 +710,60 @@ async function updateTwilioCall(callSid, twiml) {
     );
     if (response.ok) {
       console.log(`updateTwilioCall OK: ${response.status}`);
+      return true;
     } else {
       const body = await response.text();
       console.error(`updateTwilioCall FAILED: ${response.status} ${body}`);
+      return false;
     }
   } catch (err) {
     console.error('updateTwilioCall ERROR:', err.message);
+    return false;
   }
 }
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Graceful shutdown — MISTAKE #009
+// On SIGTERM (Railway deploy restart) or SIGINT (Ctrl+C): stop accepting new
+// connections, wait up to 60s for active calls to finish, then exit cleanly.
+function gracefulShutdown(signal) {
+  const activeCount = activeSessions.size;
+  console.log(`${signal} received, waiting for ${activeCount} active call(s) to finish...`);
+
+  // Stop accepting new HTTP and WebSocket connections
+  server.close(() => {
+    console.log('Server closed. Exiting cleanly.');
+    process.exit(0);
+  });
+
+  if (activeSessions.size === 0) return; // Nothing active — server.close callback handles exit
+
+  const POLL_INTERVAL = 1000;   // check every second
+  const MAX_WAIT     = 60000;   // 60-second hard limit
+  let elapsed        = 0;
+
+  const poll = setInterval(() => {
+    elapsed += POLL_INTERVAL;
+    const remaining = activeSessions.size;
+
+    if (remaining === 0) {
+      clearInterval(poll);
+      console.log('All active calls finished. Exiting cleanly.');
+      // server.close() callback will fire and call process.exit(0)
+      return;
+    }
+
+    console.log(`Shutdown: ${remaining} call(s) still active (${elapsed / 1000}s elapsed)...`);
+
+    if (elapsed >= MAX_WAIT) {
+      clearInterval(poll);
+      console.warn(`Shutdown timeout — ${remaining} call(s) still active after 60s. Forcing exit.`);
+      process.exit(1);
+    }
+  }, POLL_INTERVAL);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
