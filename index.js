@@ -292,12 +292,16 @@ function detectLanguageFromText(text) {
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
   // NOTE: no detect_language param — language: 'multi' is itself the detection mode
+  // nova-3 required: nova-2 multi only supports EN+ES. nova-3 adds PT, FR, DE, HI, etc.
+  // endpointing: 100ms recommended by Deepgram for language=multi code-switching
+  const model = (dgLang === 'multi') ? 'nova-3' : 'nova-2-general';
+  const endpointing = (dgLang === 'multi') ? 100 : 300;
   return client.listen.live({
-    model: 'nova-2-general',
+    model,
     language: dgLang,
     punctuate: true,
     interim_results: true,
-    endpointing: 300,
+    endpointing,
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1,
@@ -486,8 +490,18 @@ wss.on('connection', (twilioWs, req) => {
         // Try Deepgram's detected_language first, fall back to text regex
         // In streaming mode, detected language is in alternatives[0].languages[0]
         // (data.channel.detected_language does NOT exist in streaming — pre-recorded only)
+        // languages[0] = dominant language for this segment (nova-3 multi streaming)
         const dgDetected = data.channel?.alternatives?.[0]?.languages?.[0];
         let detected = dgDetected ? deepgramLangMap[dgDetected] : null;
+
+        // Per-word language backup: if any word is tagged non-English, use that
+        if (!detected || detected === 'English') {
+          const words = data.channel?.alternatives?.[0]?.words || [];
+          for (const w of words) {
+            const wLang = deepgramLangMap[w.language];
+            if (wLang && wLang !== 'English') { detected = wLang; break; }
+          }
+        }
 
         const wordCount = text.trim().split(/\s+/).length;
 
