@@ -347,6 +347,43 @@ wss.on('connection', (twilioWs, req) => {
   let destroyed = false;
   // Transcript spoken while TTS lock was active — processed immediately after lock expires
   let bufferedTranscript = null;
+  let noInputTimer = null;
+  let noInputCount = 0;
+
+  const NO_INPUT_MESSAGES = {
+    'English':    "I didn't hear you. Could you please say that again?",
+    'Portuguese': "Não ouvi. Pode repetir, por favor?",
+    'Spanish':    "No le escuché. ¿Puede repetir, por favor?",
+    'Mandarin':   "我没有听到。请再说一遍？",
+    'Arabic':     "لم أسمعك. هل يمكنك التكرار؟"
+  };
+
+  function startNoInputTimer() {
+    clearTimeout(noInputTimer);
+    // Only fire when language is confirmed and not in DTMF entry
+    if (!languageConfirmed || dtmfSessions.has(callSid)) return;
+    noInputTimer = setTimeout(async () => {
+      if (destroyed || isSpeaking) return;
+      noInputCount++;
+      if (noInputCount > 3) {
+        console.log(`No input x3 — hanging up ${callSid}`);
+        const lang = lockedLanguage || 'English';
+        const voice = pollyVoiceMap[lang] || 'Polly.Ruth-Neural';
+        const bye = { 'English': "We didn't hear from you. Feel free to call back anytime. Goodbye!", 'Portuguese': "Não ouvi resposta. Pode ligar de volta quando quiser. Até logo!", 'Spanish': "No recibimos respuesta. Puede llamar de nuevo cuando quiera. ¡Hasta luego!", 'Mandarin': "我们没有收到您的回复。欢迎随时再次致电。再见！", 'Arabic': "لم نسمع منك. يمكنك الاتصال مرة أخرى في أي وقت. وداعاً!" };
+        const msg = bye[lang] || bye['English'];
+        const safe = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        await updateTwilioCall(callSid, `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}"><prosody volume="+6dB">${safe}</prosody></Say><Hangup/></Response>`);
+        return;
+      }
+      const lang = lockedLanguage || 'English';
+      const voice = pollyVoiceMap[lang] || 'Polly.Ruth-Neural';
+      const msg = NO_INPUT_MESSAGES[lang] || NO_INPUT_MESSAGES['English'];
+      const safe = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      console.log(`No input timeout #${noInputCount} — re-prompting in ${lang}`);
+      setSpeakingLock(msg);
+      await updateTwilioCall(callSid, `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}"><prosody volume="+6dB">${safe}</prosody></Say><Pause length="600"/></Response>`);
+    }, 10000);
+  }
 
   // Block TTS bleedthrough for greeting when language was preselected via keypad
   if (preselectedLanguage) {
@@ -368,6 +405,7 @@ wss.on('connection', (twilioWs, req) => {
     destroyed = true;
     clearTimeout(silenceTimer);
     clearTimeout(speakingTimer);
+    clearTimeout(noInputTimer);
     clearInterval(dgKeepAliveInterval);
     try { deepgramLive?.finish(); } catch(e) {}
     activeSessions.delete(sessionId);
@@ -400,6 +438,9 @@ wss.on('connection', (twilioWs, req) => {
           if (!full || full.length < 2) return;
           await processTranscript(full);
         }, 1000);
+      } else {
+        // No buffered input — start no-input watchdog
+        startNoInputTimer();
       }
     }, duration);
   }
@@ -424,6 +465,12 @@ wss.on('connection', (twilioWs, req) => {
       if (dtmfSessions.has(callSid)) {
         console.log(`Ignored transcript — DTMF phone entry in progress: "${text}"`);
         return;
+      }
+
+      // Caller is speaking — cancel no-input watchdog
+      if (data.is_final && text.trim().length >= 2) {
+        clearTimeout(noInputTimer);
+        noInputCount = 0;
       }
 
       if (isSpeaking) {
@@ -677,6 +724,7 @@ wss.on('connection', (twilioWs, req) => {
       console.log('Twilio disconnected');
       clearTimeout(silenceTimer);
       clearTimeout(speakingTimer);
+      clearTimeout(noInputTimer);
       try { deepgramLive?.finish(); } catch(e) {}
       activeSessions.delete(sessionId);
       sessionLanguages.delete(sessionId);
