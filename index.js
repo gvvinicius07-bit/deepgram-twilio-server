@@ -146,7 +146,7 @@ app.post('/incoming-call', async (req, res) => {
   const safeGreeting = greetingText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Ruth-Neural">${safeGreeting}</Say>
+  <Say voice="Polly.Ruth-Neural"><prosody volume="+6dB">${safeGreeting}</prosody></Say>
   <Start><Stream url="${wsUrl}" track="inbound_track" /></Start>
   <Pause length="600"/>
 </Response>`;
@@ -159,7 +159,7 @@ app.post('/language-menu', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather numDigits="1" action="https://${SERVER_URL}/language-pick" method="POST" timeout="10">
-    <Say voice="Polly.Ruth-Neural">It seems like you may be having trouble. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</Say>
+    <Say voice="Polly.Ruth-Neural"><prosody volume="+6dB">It seems like you may be having trouble. Press 1 for English. Press 2 for Portuguese. Press 3 for Spanish. Press 4 for Mandarin. Press 5 for Arabic.</prosody></Say>
   </Gather>
   <Redirect method="POST">https://${SERVER_URL}/language-menu</Redirect>
 </Response>`;
@@ -201,7 +201,7 @@ app.post('/language-pick', async (req, res) => {
   const wsUrl = `wss://${SERVER_URL}/stream/${callSid}/${language}`;
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${voice}">${safeGreeting}</Say>
+  <Say voice="${voice}"><prosody volume="+6dB">${safeGreeting}</prosody></Say>
   <Start><Stream url="${wsUrl}" track="inbound_track" /></Start>
   <Pause length="600"/>
 </Response>`;
