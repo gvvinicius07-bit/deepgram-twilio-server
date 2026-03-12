@@ -302,15 +302,7 @@ function createDGLive(client, language) {
     sample_rate: 8000,
     channels: 1,
     utterance_end_ms: 1500,
-    vad_events: true,
-    keywords: [
-      'Tiburon:3', 'Larkspur:3', 'Sausalito:3', 'Novato:3', 'Petaluma:3',
-      'San Rafael:3', 'Mill Valley:3', 'Corte Madera:3', 'San Anselmo:3',
-      'Fairfax:3', 'Belvedere:3', 'Kentfield:3', 'Benicia:3', 'Martinez:3',
-      'Walnut Creek:2', 'Pleasanton:2', 'Livermore:2', 'San Ramon:2',
-      'El Cerrito:2', 'Emeryville:2', 'Alameda:2', 'San Leandro:2',
-      'Magnolia:2', 'Boulevard:2', 'Avenue:2', 'Terrace:2'
-    ]
+    vad_events: true
   });
 }
 
