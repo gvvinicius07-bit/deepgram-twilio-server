@@ -109,7 +109,31 @@ function isPhoneConfirmed(text) {
   return PHONE_CONFIRMED_PATTERNS.some(p => p.test(text));
 }
 
+// In-memory log buffer for live diagnostics
+const logBuffer = [];
+const _origLog = console.log.bind(console);
+const _origErr = console.error.bind(console);
+console.log = (...args) => { const line = args.join(' '); logBuffer.push(Date.now() + ' ' + line); if (logBuffer.length > 300) logBuffer.shift(); _origLog(...args); };
+console.error = (...args) => { const line = 'ERR ' + args.join(' '); logBuffer.push(Date.now() + ' ' + line); if (logBuffer.length > 300) logBuffer.shift(); _origErr(...args); };
+
 app.get('/', (req, res) => res.send('Deepgram Twilio Server Running'));
+
+app.get('/logs', (req, res) => res.type('text/plain').send(logBuffer.join('\n') || 'No logs yet'));
+
+app.get('/health', async (req, res) => {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+  const n8nUrl     = process.env.N8N_WEBHOOK_URL;
+  const result = { server: 'ok', twilio: 'unknown', n8n_url: n8nUrl || 'NOT SET', account_sid_set: !!accountSid, auth_token_set: !!authToken };
+  try {
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}.json`, {
+      headers: { Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64') }
+    });
+    result.twilio = r.ok ? 'ok' : `FAILED-${r.status}`;
+    if (!r.ok) result.twilio_error = await r.text();
+  } catch(e) { result.twilio = 'ERROR: ' + e.message; }
+  res.json(result);
+});
 
 app.post('/incoming-call', async (req, res) => {
   const callSid = req.body.CallSid || 'unknown';
@@ -650,7 +674,8 @@ wss.on('connection', (twilioWs, req) => {
 async function updateTwilioCall(callSid, twiml) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) return;
+  if (!accountSid || !authToken) { console.error('updateTwilioCall: missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN'); return; }
+  console.log(`updateTwilioCall: ${callSid} | TwiML preview: ${twiml.slice(0, 120)}`);
   try {
     const response = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`,
@@ -663,9 +688,14 @@ async function updateTwilioCall(callSid, twiml) {
         body: new URLSearchParams({ Twiml: twiml })
       }
     );
-    if (!response.ok) console.error(`Twilio update failed: ${response.status} ${await response.text()}`);
+    if (response.ok) {
+      console.log(`updateTwilioCall OK: ${response.status}`);
+    } else {
+      const body = await response.text();
+      console.error(`updateTwilioCall FAILED: ${response.status} ${body}`);
+    }
   } catch (err) {
-    console.error('Error updating Twilio call:', err);
+    console.error('updateTwilioCall ERROR:', err.message);
   }
 }
 
