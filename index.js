@@ -291,7 +291,7 @@ function detectLanguageFromText(text) {
 
 function createDGLive(client, language) {
   const dgLang = dgLanguageMap[language] || 'en';
-  const config = {
+  return client.listen.live({
     model: 'nova-2-general',
     language: dgLang,
     punctuate: true,
@@ -302,11 +302,7 @@ function createDGLive(client, language) {
     channels: 1,
     utterance_end_ms: 1500,
     vad_events: true
-  };
-  // In multi mode, also request detect_language so the detected_language field
-  // is populated even when the transcription text is garbage (common for non-English).
-  if (dgLang === 'multi') config.detect_language = true;
-  return client.listen.live(config);
+  });
 }
 
 function estimateTTSDuration(text) {
