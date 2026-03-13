@@ -550,9 +550,9 @@ wss.on('connection', (twilioWs, req) => {
           await processTranscript(text);
         } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
           // Fallback: no detected_language from Deepgram, text looks like English.
-          // Require 2 consecutive ambiguous utterances before locking English — one garbage
-          // transcription of Portuguese won't permanently route caller to English.
-          // processTranscript is still called so caller gets a response on the 1st try.
+          // Only process AFTER language is confirmed (2nd ambiguous utterance).
+          // Do NOT call processTranscript on the 1st — it triggers an English response
+          // before Portuguese can be detected, causing a double-response.
           englishUtteranceCount++;
           failedDetectionCount++;
           if (englishUtteranceCount >= 2) {
@@ -560,6 +560,7 @@ wss.on('connection', (twilioWs, req) => {
             languageConfirmed = true;
             sessionLanguages.set(callSid, 'English');
             console.log('Language confirmed: English (fallback)');
+            await processTranscript(text);
           }
           if (failedDetectionCount >= 6 && !languageConfirmed) {
             console.log('Detection failed, triggering language menu');
@@ -569,7 +570,6 @@ wss.on('connection', (twilioWs, req) => {
             }
             return;
           }
-          await processTranscript(text);
         }
         return;
       }
