@@ -627,9 +627,9 @@ wss.on('connection', (twilioWs, req) => {
 
         const wordCount = text.trim().split(/\s+/).length;
 
-        // Text detection only on 2+ word utterances to avoid single-word false positives
-        // (e.g. "oi" transcribed as "Hoy" which is Spanish)
-        if (wordCount >= 2) {
+        // Run text detection on all utterances (including single words).
+        // PT_SINGLE_WORD catches "oi"/"ola" as Portuguese before they can reach the English path.
+        {
           const textDetected = detectLanguageFromText(text);
           if (textDetected && textDetected !== 'English') {
             detected = textDetected;
@@ -676,9 +676,9 @@ wss.on('connection', (twilioWs, req) => {
           bufferedTranscript = null;
           console.log(`Sending to n8n: "LANGUAGE_SWITCHED"`);
           await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
-        } else if (detected === 'English' && data.is_final && text.trim().split(/\s+/).length >= 3) {
-          // Deepgram tagged this as English. The PT/ES 2-word guard above already
-          // prevents "oi voce fala portugues" from reaching here as a false English.
+        } else if (detected === 'English' && data.is_final) {
+          // Deepgram tagged this as English. PT/ES text-confirmation guard above already
+          // prevents Portuguese/Spanish phrases from reaching here.
           englishUtteranceCount++;
           failedDetectionCount++;
           if (englishUtteranceCount >= 1) {
@@ -688,9 +688,8 @@ wss.on('connection', (twilioWs, req) => {
             console.log('Language confirmed: English (explicit Deepgram detection)');
             await processTranscript(text);
           }
-        } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
-          // Fallback: no detected_language from Deepgram, text looks like English.
-          // PT/ES guard above already handles Portuguese phrases mis-tagged as English.
+        } else if (data.is_final && text.trim().length >= 2) {
+          // Fallback: Deepgram returned no language tag, text has no non-English markers.
           englishUtteranceCount++;
           failedDetectionCount++;
           if (englishUtteranceCount >= 1) {
