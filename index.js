@@ -79,6 +79,7 @@ const sessionLanguages = new Map();
 // GET /learning-report shows aggregate patterns and "what worked" examples.
 // POST /learning-apply?lang=X&key=Y pushes auto-generated prompt improvements to n8n.
 const learningBuffer = []; // last 100 completed booking sessions
+const sessionLearning = new Map(); // callSid → per-call tracking data
 
 const FIELD_DETECT = {
   phone:   [/phone/i, /telefone/i, /teléfono/i, /celular/i, /número.{0,20}(tel|cel)/i, /电话/, /手机/, /هاتف/],
