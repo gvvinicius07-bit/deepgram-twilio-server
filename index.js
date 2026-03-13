@@ -313,7 +313,7 @@ function createDGLive(client, language) {
 function estimateTTSDuration(text) {
   if (!text) return 2000;
   const words = text.trim().split(/\s+/).length;
-  return Math.max(2000, words * 450 + 1500);
+  return Math.max(2000, words * 600 + 1500);
 }
 
 wss.on('connection', (twilioWs, req) => {
@@ -441,7 +441,7 @@ wss.on('connection', (twilioWs, req) => {
           transcript = '';
           if (!full || full.length < 2) return;
           await processTranscript(full);
-        }, 1000);
+        }, 1800);
       } else {
         // No buffered input — start no-input watchdog
         startNoInputTimer();
