@@ -539,15 +539,19 @@ wss.on('connection', (twilioWs, req) => {
           console.log(`Sending to n8n: "LANGUAGE_SWITCHED"`);
           await sendToN8n('LANGUAGE_SWITCHED', callSid, streamSid, detected);
         } else if (detected === 'English' && data.is_final && text.trim().split(/\s+/).length >= 3) {
-          // Deepgram explicitly detected English with enough words
+          // Deepgram tagged this as English, but require 2 detections before confirming.
+          // nova-3 sometimes tags "oi voce fala portugues" as English on the 1st is_final,
+          // then corrects to Portuguese on the next. Waiting for 2 prevents false English
+          // responses to Portuguese greeting phrases.
           englishUtteranceCount++;
-          if (englishUtteranceCount >= 1) {
+          failedDetectionCount++;
+          if (englishUtteranceCount >= 2) {
             lockedLanguage = 'English';
             languageConfirmed = true;
             sessionLanguages.set(callSid, 'English');
             console.log('Language confirmed: English (explicit Deepgram detection)');
+            await processTranscript(text);
           }
-          await processTranscript(text);
         } else if (data.is_final && text.trim().split(/\s+/).length >= 3) {
           // Fallback: no detected_language from Deepgram, text looks like English.
           // Only process AFTER language is confirmed (2nd ambiguous utterance).
