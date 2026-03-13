@@ -73,6 +73,39 @@ const phoneCollectionPending = new Set();
 // Track confirmed language per callSid (needed by /phone-dtmf-received)
 const sessionLanguages = new Map();
 
+// ---- LEARNING SYSTEM ----
+// Tracks which conversation patterns lead to smooth field collection vs. retries.
+// On each completed booking, stores the session's exchanges.
+// GET /learning-report shows aggregate patterns and "what worked" examples.
+// POST /learning-apply?lang=X&key=Y pushes auto-generated prompt improvements to n8n.
+const learningBuffer = []; // last 100 completed booking sessions
+
+const FIELD_DETECT = {
+  phone:   [/phone/i, /telefone/i, /teléfono/i, /celular/i, /número.{0,20}(tel|cel)/i, /电话/, /手机/, /هاتف/],
+  name:    [/\bname\b/i, /\bnome\b/i, /\bnombre\b/i, /名字/, /اسم/],
+  address: [/address/i, /endere[çc]o/i, /direcci[oó]n/i, /domicilio/i, /地址/, /العنوان/],
+  service: [/service/i, /servi[çc]o/i, /servicio/i, /pintura/i, /paint/i, /服务/, /خدمة/],
+  date:    [/\bdate\b/i, /\bdata\b/i, /fecha/i, /hor[aá]rio/i, /日期/, /موعد/]
+};
+
+function detectFieldAsked(text) {
+  if (!text) return null;
+  for (const [field, patterns] of Object.entries(FIELD_DETECT)) {
+    if (patterns.some(p => p.test(text))) return field;
+  }
+  return null;
+}
+
+function storeLearningSession(sid, sessions) {
+  const s = sessions.get(sid);
+  if (!s || !s.language || s.exchanges.length < 2) return;
+  s.endTime = Date.now();
+  s.totalTurns = s.exchanges.length;
+  learningBuffer.push({ ...s });
+  if (learningBuffer.length > 100) learningBuffer.shift();
+  console.log(`[Learning] Stored: ${s.language}, ${s.totalTurns} turns, retries=${JSON.stringify(s.fieldRetries)}`);
+}
+
 // Detect when the AI is asking for a phone number (all 5 languages)
 const PHONE_REQUEST_PATTERNS = [
   /phone number/i,
@@ -133,6 +166,94 @@ app.get('/health', async (req, res) => {
     if (!r.ok) result.twilio_error = await r.text();
   } catch(e) { result.twilio = 'ERROR: ' + e.message; }
   res.json(result);
+});
+
+// GET /learning-report — shows what patterns work best across all bookings
+app.get('/learning-report', (req, res) => {
+  if (learningBuffer.length === 0) {
+    return res.json({ totalBookings: 0, note: 'No completed bookings tracked yet. Data accumulates as calls complete.' });
+  }
+  const byLanguage = {};
+  for (const session of learningBuffer) {
+    const lang = session.language || 'Unknown';
+    if (!byLanguage[lang]) byLanguage[lang] = { bookings: 0, totalTurns: 0, fieldRetries: {}, topExchanges: {} };
+    const b = byLanguage[lang];
+    b.bookings++;
+    b.totalTurns += session.totalTurns;
+    for (const [field, count] of Object.entries(session.fieldRetries || {})) {
+      b.fieldRetries[field] = (b.fieldRetries[field] || 0) + count;
+    }
+    // Only log clean (first-try) exchanges as examples of what works
+    for (const ex of session.exchanges) {
+      if (!ex.isRetry && ex.field && ex.user && ex.bot) {
+        if (!b.topExchanges[ex.field]) b.topExchanges[ex.field] = [];
+        if (b.topExchanges[ex.field].length < 8) b.topExchanges[ex.field].push({ user: ex.user, bot: ex.bot });
+      }
+    }
+  }
+  for (const b of Object.values(byLanguage)) {
+    b.avgTurns = b.bookings ? +(b.totalTurns / b.bookings).toFixed(1) : 0;
+    for (const f of Object.keys(b.fieldRetries)) {
+      b.fieldRetryRate = b.fieldRetryRate || {};
+      b.fieldRetryRate[f] = +(b.fieldRetries[f] / b.bookings).toFixed(2);
+    }
+    delete b.fieldRetries;
+    delete b.totalTurns;
+  }
+  res.json({
+    totalBookings: learningBuffer.length,
+    note: learningBuffer.length < 5 ? 'Collecting data — need 5+ bookings per language for reliable patterns' : 'Patterns ready',
+    byLanguage
+  });
+});
+
+// POST /learning-apply — auto-pushes improved prompt examples to n8n based on collected patterns
+app.post('/learning-apply', async (req, res) => {
+  const { lang, key } = req.query;
+  if (!lang || !key) return res.status(400).json({ error: 'Provide ?lang=Portuguese&key=<n8n_api_key>' });
+  const sessions = learningBuffer.filter(s => s.language === lang);
+  if (sessions.length < 3) return res.json({ ok: false, reason: `Only ${sessions.length} ${lang} bookings — need at least 3` });
+
+  // Build few-shot examples from smooth exchanges
+  const examples = {};
+  for (const session of sessions) {
+    for (const ex of session.exchanges) {
+      if (!ex.isRetry && ex.field && ex.user && ex.bot) {
+        if (!examples[ex.field]) examples[ex.field] = [];
+        if (examples[ex.field].length < 3) examples[ex.field].push(`Caller: "${ex.user}" → Bot: "${ex.bot}"`);
+      }
+    }
+  }
+  const exampleBlock = Object.entries(examples)
+    .map(([field, list]) => `${field.toUpperCase()}:\n${list.join('\n')}`)
+    .join('\n\n');
+
+  // Fetch and update n8n workflow
+  const N8N_BASE = (process.env.N8N_BASE_URL || 'https://primary-production-34d51.up.railway.app').replace(/\/$/, '');
+  const WF_ID = process.env.N8N_WF_ID || 'PCsQvyZuFvgAL0Or';
+  try {
+    const wfRes = await fetch(`${N8N_BASE}/api/v1/workflows/${WF_ID}`, { headers: { 'X-N8N-API-KEY': key } });
+    if (!wfRes.ok) return res.json({ ok: false, reason: `n8n GET failed: ${wfRes.status}` });
+    const wf = await wfRes.json();
+    const nodeName = lang.toLowerCase();
+    const node = wf.nodes.find(n => n.name === nodeName);
+    if (!node) return res.json({ ok: false, reason: `Node "${nodeName}" not found` });
+
+    const currentPrompt = node.parameters?.options?.systemMessage || '';
+    const tag = '=== LEARNED EXAMPLES ===';
+    const base = currentPrompt.includes(tag) ? currentPrompt.split(tag)[0].trimEnd() : currentPrompt.trimEnd();
+    node.parameters.options.systemMessage = `${base}\n\n${tag}\nBased on ${sessions.length} successful calls, these phrasings worked well:\n\n${exampleBlock}`;
+
+    const payload = { name: wf.name, nodes: wf.nodes, connections: wf.connections, settings: { executionOrder: wf.settings?.executionOrder || 'v1' }, staticData: wf.staticData };
+    const putRes = await fetch(`${N8N_BASE}/api/v1/workflows/${WF_ID}`, {
+      method: 'PUT', headers: { 'X-N8N-API-KEY': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!putRes.ok) return res.json({ ok: false, reason: `n8n PUT failed: ${putRes.status}` });
+    res.json({ ok: true, lang, sessionsUsed: sessions.length, examplesAdded: Object.keys(examples), preview: exampleBlock.slice(0, 300) });
+  } catch (e) {
+    res.status(500).json({ ok: false, reason: e.message });
+  }
 });
 
 app.post('/incoming-call', async (req, res) => {
@@ -672,6 +793,19 @@ wss.on('connection', (twilioWs, req) => {
       const sayMatch = twimlResponse.match(/<Say[^>]*>(.*?)<\/Say>/s);
       const sayText = sayMatch ? sayMatch[1].replace(/<[^>]+>/g, '') : twimlResponse;
 
+      // Track exchange for learning system
+      const learnSession = sessionLearning.get(cSid);
+      if (learnSession) {
+        if (!learnSession.language && language) learnSession.language = language;
+        const fieldAsked = detectFieldAsked(sayText);
+        const isRetry = fieldAsked && fieldAsked === learnSession.lastField;
+        if (fieldAsked && isRetry) learnSession.fieldRetries[fieldAsked] = (learnSession.fieldRetries[fieldAsked] || 0) + 1;
+        learnSession.exchanges.push({ turn: learnSession.exchanges.length + 1, user: speechResult.slice(0, 200), bot: sayText.slice(0, 200), field: fieldAsked, isRetry });
+        learnSession.lastField = fieldAsked || learnSession.lastField;
+        // <Hangup/> signals booking complete — store the session
+        if (twimlResponse.includes('<Hangup/>')) storeLearningSession(cSid, sessionLearning);
+      }
+
       // Once phone is confirmed (AI asks for address), clear phone collection state
       if ((phoneCollectionActive.has(cSid) || phoneCollectionPending.has(cSid)) && isPhoneConfirmed(sayText)) {
         console.log(`Phone confirmed — clearing phone collection state for ${cSid}`);
@@ -710,6 +844,8 @@ wss.on('connection', (twilioWs, req) => {
           callSid = data.start.callSid;
           streamSid = data.start.streamSid;
           console.log(`Stream started: ${callSid}`);
+          // Initialize learning session
+          sessionLearning.set(callSid, { language: lockedLanguage, startTime: Date.now(), exchanges: [], fieldRetries: {}, lastField: null });
           break;
         case 'media':
           const audio = Buffer.from(data.media.payload, 'base64');
@@ -729,6 +865,7 @@ wss.on('connection', (twilioWs, req) => {
           dtmfSessions.delete(sessionId);
           phoneCollectionActive.delete(sessionId);
           phoneCollectionPending.delete(sessionId);
+          sessionLearning.delete(sessionId);
           break;
       }
     } catch (err) {
@@ -750,6 +887,7 @@ wss.on('connection', (twilioWs, req) => {
       dtmfSessions.delete(sessionId);
       phoneCollectionActive.delete(sessionId);
       phoneCollectionPending.delete(sessionId);
+      sessionLearning.delete(sessionId);
     }
   });
 
