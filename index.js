@@ -640,6 +640,18 @@ wss.on('connection', (twilioWs, req) => {
           console.log(`Deepgram detected: ${detected} (${dgDetected})`);
         }
 
+        // Spanish and Portuguese are acoustically very similar.
+        // "oi" sounds like Spanish "hoy" — Deepgram mis-tags single Portuguese words as Spanish.
+        // Require is_final + 2+ words before switching to either, so we always have
+        // enough context for the text regex to confirm the right language.
+        // Arabic and Mandarin are already unambiguous (distinct scripts caught above).
+        if (detected && (detected === 'Spanish' || detected === 'Portuguese')) {
+          if (!data.is_final || wordCount < 2) {
+            console.log(`Holding ${detected} detection — waiting for 2+ words (got ${wordCount}, is_final=${data.is_final})`);
+            detected = null;
+          }
+        }
+
         // Switch to non-English if Deepgram detected it, OR text matched on 2+ words
         if (detected && detected !== 'English') {
           console.log(`Non-English confirmed: ${detected}, switching Deepgram`);
