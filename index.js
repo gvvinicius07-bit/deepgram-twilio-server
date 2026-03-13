@@ -537,6 +537,10 @@ wss.on('connection', (twilioWs, req) => {
           const langSwitchedMsg = triggerWords >= 3
             ? `LANGUAGE_SWITCHED: ${text.trim()}`
             : 'LANGUAGE_SWITCHED';
+          // Clear any buffered transcript — the greeting IS the response to the
+          // language switch. Processing what the caller said during the greeting
+          // causes the bot to talk twice in a row before the caller can respond.
+          bufferedTranscript = null;
           console.log(`Sending to n8n: "${langSwitchedMsg}"`);
           await sendToN8n(langSwitchedMsg, callSid, streamSid, detected);
         } else if (detected === 'English' && data.is_final && text.trim().split(/\s+/).length >= 3) {
